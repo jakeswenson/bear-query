@@ -7,8 +7,8 @@ edition = "2021"
 
 [dependencies]
 # Removed unused dependencies: config, dotenvy, uuid
-dirs = "5.0"
-rusqlite = { version = "0.32", features = ["bundled", "time"] }
+dirs = "6.0.0"
+rusqlite = { version = "0.37.0", features = ["bundled", "time"] }
 serde = { version = "1.0", features = ["derive"] }
-thiserror = "1.0"
-time = { version = "0.3", features = ["serde"] }
+thiserror = "2.0"
+time = { version = "0.3.44", features = ["serde"] }
