@@ -3,8 +3,6 @@ use bear_query::{BearDb, BearError, note_links, notes, tags, note_tags};
 fn main() -> Result<(), BearError> {
   let db = BearDb::open()?;
 
-  dbg!(db.connection.query_row("PRAGMA journal_mode", [], |row| row.get::<usize, String>(0))?);
-
   let tags = tags(&db)?;
 
   println!("{:?}", tags);
