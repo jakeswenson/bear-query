@@ -179,11 +179,25 @@ pub enum BearError {
 }
 ```
 
+## Dependencies
+
+This library uses minimal, well-maintained dependencies:
+
+- **rusqlite** (0.32+): SQLite interface with bundled SQLite for portability
+- **dirs** (5.0+): Cross-platform user directory detection
+- **time** (0.3+): Date/time handling for Core Data timestamps
+- **serde** (1.0+): Serialization framework (used by time)
+- **thiserror** (1.0+): Error handling macros
+
+All dependencies use semver-compatible version ranges and are updated to their latest stable releases.
+
 ## Building
 
 ```bash
 cargo build --release
 ```
+
+First build will download dependencies from crates.io.
 
 ## Running
 
