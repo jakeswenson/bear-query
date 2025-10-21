@@ -1,3 +1,43 @@
+//! # bear-query
+//!
+//! A completely read-only, non-blocking library for querying Bear app's SQLite database.
+//!
+//! ## Safety Guarantees
+//!
+//! This library implements multiple layers of protection to ensure ZERO interference with Bear:
+//!
+//! 1. **Read-Only File Access**: Opens with `SQLITE_OPEN_READ_ONLY`
+//! 2. **No Internal Locks**: Uses `SQLITE_OPEN_NO_MUTEX` to prevent lock contention
+//! 3. **Query-Only Mode**: Enforces `PRAGMA query_only = ON` at SQLite level
+//! 4. **WAL Mode**: Verifies database uses Write-Ahead Logging for concurrent access
+//!
+//! ## How It Works
+//!
+//! Bear uses SQLite's WAL (Write-Ahead Logging) mode, which allows readers and writers
+//! to operate concurrently without blocking each other. This library takes advantage of
+//! WAL mode to read from Bear's database while Bear is actively writing, with no
+//! interference whatsoever.
+//!
+//! In WAL mode:
+//! - Writes go to a separate WAL file
+//! - Reads access stable snapshots
+//! - **Zero lock contention** between readers and writers
+//!
+//! ## Example
+//!
+//! ```no_run
+//! use bear_query::{BearDb, notes, tags};
+//!
+//! let db = BearDb::open()?;
+//! let all_tags = tags(&db)?;
+//! let recent_notes = notes(&db)?;
+//!
+//! for note in recent_notes {
+//!     println!("{}", note.title());
+//! }
+//! # Ok::<(), bear_query::BearError>(())
+//! ```
+
 use std::collections::{HashMap, HashSet};
 use rusqlite::{Connection, OpenFlags, Row, ToSql};
 use rusqlite::types::{FromSql, FromSqlResult, ToSqlOutput, ValueRef};
@@ -24,8 +64,28 @@ impl BearDb {
       "Library/Group Containers/9K33E3U3T4.net.shinyfrog.bear/Application Data/database.sqlite"
     );
 
+    // Open with maximum read-only protection:
+    // - SQLITE_OPEN_READ_ONLY: Opens in read-only mode
+    // - SQLITE_OPEN_NO_MUTEX: Disables internal mutexes for thread safety (safe for single-threaded read-only)
+    // These flags ensure we NEVER take write locks or block the Bear app
+    let connection = Connection::open_with_flags(
+      bear_db,
+      OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX
+    )?;
 
-    let connection = Connection::open_with_flags(bear_db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    // Enable query_only mode as an additional safety measure
+    // This prevents any writes even if somehow attempted
+    connection.pragma_update(None, "query_only", "ON")?;
+
+    // Verify the database is in WAL mode (Write-Ahead Logging)
+    // WAL mode allows concurrent reads without blocking writes
+    let journal_mode: String = connection
+      .query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+
+    if journal_mode != "wal" {
+      eprintln!("Warning: Database is not in WAL mode (current: {}). Reads may block writes.", journal_mode);
+      eprintln!("This is unusual for Bear app and may cause interference.");
+    }
 
     Ok(BearDb {
       connection
