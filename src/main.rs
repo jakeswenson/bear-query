@@ -1,19 +1,19 @@
-use bear_query::{BearDb, BearError, note_links, notes, tags, note_tags};
+use bear_query::{BearDb, BearError};
 
 fn main() -> Result<(), BearError> {
-  let db = BearDb::open()?;
+  let db = BearDb::new()?;
 
-  let tags = tags(&db)?;
+  let tags = db.tags()?;
 
   println!("{:?}", tags);
 
-  notes(&db)?.into_iter().for_each(|note| {
+  db.notes()?.into_iter().for_each(|note| {
     println!("{:?}", note);
-    note_links(&db, note.id()).unwrap().into_iter().for_each(|link| {
+    db.note_links(note.id()).unwrap().into_iter().for_each(|link| {
       println!("Linked: {:?}", link.title())
     });
 
-    let note_tags = note_tags(&db, note.id()).unwrap();
+    let note_tags = db.note_tags(note.id()).unwrap();
     println!("Tags: {:?}", tags.names(&note_tags));
   });
 
