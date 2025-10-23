@@ -254,8 +254,8 @@ pub fn note_links(db: &BearDb, from: BearNoteId) -> Result<Vec<BearNote>, BearEr
     datetime(note.ZCREATIONDATE + cd.core_data_start_time, 'unixepoch') as created,
     ZPINNED as is_pinned
 FROM ZSFNOTE as note, core_data as cd
-INNER JOIN Z_7LINKEDNOTES as note_links ON note_links.Z_7LINKEDNOTES = note.Z_PK
-WHERE note.ZTRASHED <> 1 AND note.ZARCHIVED <> 1 AND note_links.Z_7LINKEDBYNOTES = ?
+INNER JOIN ZSFNOTEBACKLINK as note_links ON note_links.ZLINKINGTO = note.Z_PK
+WHERE note.ZTRASHED <> 1 AND note.ZARCHIVED <> 1 AND note_links.ZLINKEDBY = ?
 ORDER BY note.ZMODIFICATIONDATE DESC")?;
 
   let results: rusqlite::Result<Vec<BearNote>> = statement.query_map([from], |row| {
@@ -277,9 +277,9 @@ ORDER BY note.ZMODIFICATIONDATE DESC")?;
 pub fn note_tags(db: &BearDb, from: BearNoteId) -> Result<HashSet<BearTagId>, BearError> {
   let mut statement = db.connection.prepare(r"
 SELECT
-  note_tags.Z_14TAGS as tag_id
-FROM Z_7TAGS as note_tags
-WHERE note_tags.Z_7NOTES = ?")?;
+  note_tags.Z_13TAGS as tag_id
+FROM Z_5TAGS as note_tags
+WHERE note_tags.Z_5NOTES = ?")?;
 
   let results: rusqlite::Result<HashSet<BearTagId>> = statement.query_map([from], |row| {
     row.get("tag_id")
