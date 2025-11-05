@@ -1,4 +1,4 @@
-use bear_query::{BearDb, BearError};
+use bear_query::{BearDb, BearError, NotesQuery};
 
 fn main() -> Result<(), BearError> {
   let db = BearDb::new()?;
@@ -7,7 +7,8 @@ fn main() -> Result<(), BearError> {
 
   println!("{:?}", tags);
 
-  db.notes()?.into_iter().for_each(|note| {
+  // Using the new NotesQuery API - much more readable!
+  db.notes(NotesQuery::default())?.into_iter().for_each(|note| {
     println!("{:?}", note);
     db.note_links(note.id()).unwrap().into_iter().for_each(|link| {
       println!("Linked: {:?}", link.title())
