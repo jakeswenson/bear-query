@@ -23,15 +23,47 @@ The architecture is built around a single private method:
 
 All public methods (`tags()`, `notes()`, `note_links()`, `note_tags()`) internally call `with_connection()` and should never hold connections longer than necessary.
 
-### Database Schema
+### Database Schema & Normalization
 
-Bear uses Core Data with SQLite persistence. Key tables:
-- `ZSFNOTE` - Contains notes (title, content, timestamps, flags)
-- `ZSFNOTETAG` - Contains tags
-- `Z_5TAGS` - Junction table linking notes to tags
-- `ZSFNOTEBACKLINK` - Junction table for note-to-note links
+Bear uses Core Data with SQLite persistence. The underlying schema uses Core Data conventions:
+- Table names prefixed with `Z` (e.g., `ZSFNOTE`, `ZSFNOTETAG`)
+- Column names prefixed with `Z` (e.g., `Z_PK`, `ZTITLE`)
+- Junction table columns with numbers (e.g., `Z_5NOTES`, `Z_13TAGS`)
+- Timestamps as seconds since 2001-01-01 (Core Data epoch)
 
-Core Data uses a custom timestamp format (seconds since 2001-01-01), which this library converts to standard Unix timestamps.
+#### Normalized Schema Layer
+
+The library provides a normalization layer through automatically-generated Common Table Expressions (CTEs). This abstracts Bear's quirks and provides clean table names:
+
+**Normalized Tables:**
+- `notes` - Normalized view of `ZSFNOTE` (all note fields with clean names)
+- `tags` - Normalized view of `ZSFNOTETAG` (tag IDs and names)
+- `note_tags` - Normalized view of `Z_5TAGS` junction table (note_id, tag_id)
+- `note_links` - Normalized view of `ZSFNOTEBACKLINK` (from_note_id, to_note_id)
+
+**Key Transformations:**
+1. **Timestamps**: Core Data epoch (2001-01-01) → SQLite datetime format
+2. **Column Names**: `Z_PK` → `id`, `ZTITLE` → `title`, `ZTEXT` → `content`, etc.
+3. **Boolean Fields**: `ZTRASHED` → `is_trashed`, `ZARCHIVED` → `is_archived`, `ZPINNED` → `is_pinned`
+4. **Junction Columns**: Dynamically discovered numbered columns → `note_id`, `tag_id`
+
+#### Schema Discovery
+
+At initialization (`BearDb::new()`):
+1. Opens temporary read-only connection
+2. Queries `PRAGMA table_info(Z_5TAGS)` to discover junction column names
+3. Generates normalizing CTE SQL based on discovered schema
+4. Caches CTE string in `BearDb` for all subsequent queries
+5. Closes connection
+
+#### Queryable Abstraction
+
+All database operations go through the `Queryable<'a>` wrapper:
+- Wraps the raw SQLite `Connection`
+- Automatically prepends normalizing CTEs to all queries
+- Used by both typed methods (`tags()`, `notes()`, etc.) and generic `query()` API
+
+For complete schema documentation, see `SCHEMA.md` in the repository root.
 
 ## Development Commands
 

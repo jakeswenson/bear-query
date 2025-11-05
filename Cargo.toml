@@ -12,3 +12,4 @@ rusqlite = { version = "0.37.0", features = ["bundled", "time"] }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"
 time = { version = "0.3.44", features = ["serde"] }
+polars = { version = "0.52", default-features = false, features = ["dtype-full", "temporal", "fmt"] }

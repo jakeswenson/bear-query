@@ -25,10 +25,74 @@
 //!
 //! This approach ensures minimal lock contention with Bear's write operations.
 //!
+//! ## Normalized Schema
+//!
+//! This library automatically normalizes Bear's Core Data schema through Common Table Expressions (CTEs).
+//! All queries (both typed methods and the generic `query()` API) have access to these normalized views:
+//!
+//! ### `notes` Table
+//!
+//! The normalized view of all notes in Bear.
+//!
+//! | Column | Type | Description |
+//! |--------|------|-------------|
+//! | `id` | INTEGER | Note's primary key |
+//! | `unique_id` | TEXT | Bear's UUID for the note |
+//! | `title` | TEXT | Note title |
+//! | `content` | TEXT | Full note content (Markdown) |
+//! | `modified` | DATETIME | Last modification timestamp (converted from Core Data epoch) |
+//! | `created` | DATETIME | Creation timestamp (converted from Core Data epoch) |
+//! | `is_pinned` | INTEGER | 1 if pinned, 0 otherwise |
+//! | `is_trashed` | INTEGER | 1 if in trash, 0 otherwise |
+//! | `is_archived` | INTEGER | 1 if archived, 0 otherwise |
+//!
+//! ### `tags` Table
+//!
+//! The normalized view of all tags.
+//!
+//! | Column | Type | Description |
+//! |--------|------|-------------|
+//! | `id` | INTEGER | Tag's primary key |
+//! | `name` | TEXT | Tag name (e.g., "work/projects") |
+//! | `modified` | DATETIME | Last modification timestamp |
+//!
+//! ### `note_tags` Table
+//!
+//! Junction table linking notes to their tags (many-to-many relationship).
+//!
+//! | Column | Type | Description |
+//! |--------|------|-------------|
+//! | `note_id` | INTEGER | Foreign key to notes.id |
+//! | `tag_id` | INTEGER | Foreign key to tags.id |
+//!
+//! ### `note_links` Table
+//!
+//! Links between notes (bidirectional wiki-style links).
+//!
+//! | Column | Type | Description |
+//! |--------|------|-------------|
+//! | `from_note_id` | INTEGER | Source note ID |
+//! | `to_note_id` | INTEGER | Target note ID |
+//!
+//! ### Core Data Epoch Conversion
+//!
+//! Bear uses Apple's Core Data timestamp format (seconds since 2001-01-01 00:00:00 UTC).
+//! This library automatically converts all timestamps to standard SQLite datetime format.
+//!
+//! The conversion is done via a CTE: `unixepoch('2001-01-01')`
+//!
+//! ### Schema Discovery
+//!
+//! The library discovers variable schema elements at initialization:
+//! - Junction table column names (e.g., `Z_5NOTES`, `Z_13TAGS`)
+//! - These numbers may vary across Bear versions
+//!
+//! For full schema details, see the `SCHEMA.md` documentation file.
+//!
 //! ## Example
 //!
 //! ```no_run
-//! use bear_query::BearDb;
+//! use bear_query::{BearDb, NotesQuery};
 //!
 //! # fn main() -> Result<(), bear_query::BearError> {
 //! // Create a handle (no connection opened yet)
@@ -36,7 +100,7 @@
 //!
 //! // Each method opens a connection, queries, and closes
 //! let all_tags = db.tags()?;
-//! let recent_notes = db.notes()?;
+//! let recent_notes = db.notes(NotesQuery::default())?;
 //!
 //! for note in recent_notes {
 //!     println!("{}", note.title());
@@ -45,19 +109,138 @@
 //! # }
 //! ```
 
+mod dataframe;
+
+pub use polars::prelude as polars_prelude;
+
+use polars::prelude::*;
+use rusqlite::types::{FromSql, FromSqlResult, ToSqlOutput, ValueRef};
+use rusqlite::{Connection, OpenFlags, Row, ToSql};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Duration;
-use rusqlite::{Connection, OpenFlags, Row, ToSql};
-use rusqlite::types::{FromSql, FromSqlResult, ToSqlOutput, ValueRef};
 use time::OffsetDateTime;
+
+use dataframe::query_to_dataframe;
+
+/// Specifies the database location for BearDb.
+///
+/// For production code, use RealPath to connect to Bear's database.
+/// For tests, use InMemory to create an isolated test database.
+#[derive(Debug, Clone)]
+pub enum DatabasePath {
+  /// Path to Bear's actual database file
+  RealPath(PathBuf),
+  /// In-memory database for testing (only available with cfg(test))
+  #[cfg(test)]
+  InMemory,
+}
+
+impl DatabasePath {
+  /// Opens a connection based on the database path type.
+  /// For RealPath: opens with read-only flags and safety pragmas
+  /// For InMemory: creates an in-memory database with test schema
+  fn open_connection(&self) -> Result<Connection, BearError> {
+    match self {
+      DatabasePath::RealPath(path) => {
+        // Open with maximum read-only protection:
+        // - SQLITE_OPEN_READ_ONLY: Opens in read-only mode
+        // - SQLITE_OPEN_NO_MUTEX: Disables internal mutexes (safe for single-threaded read-only)
+        let conn = Connection::open_with_flags(
+          path,
+          OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+
+        // Set busy timeout to handle database contention
+        conn.busy_timeout(Duration::from_millis(5000))?;
+
+        // Enable query_only mode as additional safety
+        conn.pragma_update(None, "query_only", "ON")?;
+
+        Ok(conn)
+      }
+      #[cfg(test)]
+      DatabasePath::InMemory => {
+        let conn = Connection::open_in_memory()?;
+        Self::setup_test_schema(&conn)?;
+        Ok(conn)
+      }
+    }
+  }
+
+  /// Sets up a Bear-like schema with sample test data in an in-memory database
+  #[cfg(test)]
+  fn setup_test_schema(conn: &Connection) -> Result<(), BearError> {
+    conn.execute_batch(r"
+      CREATE TABLE ZSFNOTE (
+        Z_PK INTEGER PRIMARY KEY,
+        ZUNIQUEIDENTIFIER TEXT,
+        ZTITLE TEXT,
+        ZTEXT TEXT,
+        ZMODIFICATIONDATE REAL,
+        ZCREATIONDATE REAL,
+        ZPINNED INTEGER,
+        ZTRASHED INTEGER,
+        ZARCHIVED INTEGER
+      );
+
+      CREATE TABLE ZSFNOTETAG (
+        Z_PK INTEGER PRIMARY KEY,
+        ZTITLE TEXT,
+        ZMODIFICATIONDATE REAL
+      );
+
+      CREATE TABLE Z_5TAGS (
+        Z_5NOTES INTEGER,
+        Z_13TAGS INTEGER
+      );
+
+      CREATE TABLE ZSFNOTEBACKLINK (
+        ZLINKEDBY INTEGER,
+        ZLINKINGTO INTEGER
+      );
+
+      -- Insert sample test data
+      -- Core Data epoch: 2001-01-01, so timestamp 0 = 2001-01-01
+      INSERT INTO ZSFNOTE (Z_PK, ZUNIQUEIDENTIFIER, ZTITLE, ZTEXT, ZMODIFICATIONDATE, ZCREATIONDATE, ZPINNED, ZTRASHED, ZARCHIVED)
+      VALUES
+        (1, 'note-uuid-1', 'First Note', 'Content of first note', 0, 0, 0, 0, 0),
+        (2, 'note-uuid-2', 'Second Note', 'Content of second note', 31536000, 31536000, 1, 0, 0),
+        (3, 'note-uuid-3', 'Trashed Note', 'This is trashed', 0, 0, 0, 1, 0);
+
+      INSERT INTO ZSFNOTETAG (Z_PK, ZTITLE, ZMODIFICATIONDATE)
+      VALUES
+        (1, 'work', 0),
+        (2, 'personal', 0);
+
+      INSERT INTO Z_5TAGS (Z_5NOTES, Z_13TAGS)
+      VALUES
+        (1, 1),
+        (2, 2);
+
+      INSERT INTO ZSFNOTEBACKLINK (ZLINKEDBY, ZLINKINGTO)
+      VALUES
+        (1, 2);
+    ").map_err(|e| BearError::SqlError { source: e })?;
+
+    Ok(())
+  }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum BearError {
   #[error("Unable to load users home directory")]
   NoHomeDirectory,
   #[error("SQL Error: {source}")]
-  SqlError { #[from] source: rusqlite::Error },
+  SqlError {
+    #[from]
+    source: rusqlite::Error,
+  },
+  #[error("Polars Error: {source}")]
+  PolarsError {
+    #[from]
+    source: PolarsError,
+  },
 }
 
 /// Metadata discovered from Bear's database schema at initialization time.
@@ -95,7 +278,10 @@ impl NotesQuery {
   }
 
   /// Set a limit on the number of notes to return
-  pub fn limit(mut self, limit: u32) -> Self {
+  pub fn limit(
+    mut self,
+    limit: u32,
+  ) -> Self {
     self.limit = Some(limit);
     self
   }
@@ -128,9 +314,8 @@ impl NotesQuery {
 
 /// Handle to Bear's database. All operations use short-lived connections internally.
 pub struct BearDb {
-  db_path: PathBuf,
-  #[allow(dead_code)]
-  metadata: BearDbMetadata,
+  db_path: DatabasePath,
+  _metadata: BearDbMetadata,
   normalizing_cte: String,
 }
 
@@ -138,20 +323,20 @@ impl BearDb {
   /// Create a new BearDb handle. Opens a temporary connection to discover schema metadata,
   /// generates normalizing CTEs, then closes the connection.
   pub fn new() -> Result<Self, BearError> {
-    let home_dir = dirs::home_dir()
-      .ok_or(BearError::NoHomeDirectory)?;
+    let home_dir = dirs::home_dir().ok_or(BearError::NoHomeDirectory)?;
 
     let db_path = home_dir.join(
-      "Library/Group Containers/9K33E3U3T4.net.shinyfrog.bear/Application Data/database.sqlite"
+      "Library/Group Containers/9K33E3U3T4.net.shinyfrog.bear/Application Data/database.sqlite",
     );
 
+    Self::new_with_path(DatabasePath::RealPath(db_path))
+  }
+
+  /// Create a new BearDb handle with a specific database path.
+  /// This is primarily for testing with in-memory databases.
+  pub(crate) fn new_with_path(db_path: DatabasePath) -> Result<Self, BearError> {
     // Open temporary connection to discover metadata
-    let connection = Connection::open_with_flags(
-      &db_path,
-      OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX
-    )?;
-    connection.busy_timeout(Duration::from_millis(5000))?;
-    connection.pragma_update(None, "query_only", "ON")?;
+    let connection = db_path.open_connection()?;
 
     // Discover schema metadata
     let metadata = Self::discover_metadata(&connection)?;
@@ -164,7 +349,7 @@ impl BearDb {
 
     Ok(BearDb {
       db_path,
-      metadata,
+      _metadata: metadata,
       normalizing_cte,
     })
   }
@@ -173,18 +358,20 @@ impl BearDb {
   fn discover_metadata(conn: &Connection) -> Result<BearDbMetadata, BearError> {
     // Query the junction table to find its column names
     let mut stmt = conn.prepare("PRAGMA table_info(Z_5TAGS)")?;
-    let columns: Vec<String> = stmt.query_map([], |row| {
-      row.get::<_, String>("name")
-    })?.collect::<Result<Vec<_>, _>>()?;
+    let columns: Vec<String> = stmt
+      .query_map([], |row| row.get::<_, String>("name"))?
+      .collect::<Result<Vec<_>, _>>()?;
 
     // Find the columns that reference notes and tags
     // They follow the pattern Z_<number>NOTES and Z_<number>TAGS
-    let junction_notes_column = columns.iter()
+    let junction_notes_column = columns
+      .iter()
       .find(|name| name.ends_with("NOTES"))
       .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?
       .clone();
 
-    let junction_tags_column = columns.iter()
+    let junction_tags_column = columns
+      .iter()
       .find(|name| name.ends_with("TAGS"))
       .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?
       .clone();
@@ -197,7 +384,8 @@ impl BearDb {
 
   /// Generates the normalizing CTE SQL that abstracts Bear's Core Data schema
   fn generate_normalizing_cte(metadata: &BearDbMetadata) -> String {
-    format!(r#"
+    format!(
+      r#"
 WITH
   core_data AS (
     SELECT unixepoch('2001-01-01') as epoch
@@ -234,30 +422,22 @@ WITH
       nl.ZLINKINGTO as to_note_id
     FROM ZSFNOTEBACKLINK as nl
   )
-"#, metadata.junction_notes_column, metadata.junction_tags_column)
+"#,
+      metadata.junction_notes_column, metadata.junction_tags_column
+    )
   }
 
   /// Opens a short-lived connection, wraps it in a Queryable with normalizing CTEs,
   /// executes the closure, and closes the connection.
-  fn with_connection<F, R>(&self, f: F) -> Result<R, BearError>
+  fn with_connection<F, R>(
+    &self,
+    f: F,
+  ) -> Result<R, BearError>
   where
-    F: FnOnce(&Queryable) -> Result<R, BearError>
+    F: FnOnce(&Queryable) -> Result<R, BearError>,
   {
-    // Open with maximum read-only protection:
-    // - SQLITE_OPEN_READ_ONLY: Opens in read-only mode
-    // - SQLITE_OPEN_NO_MUTEX: Disables internal mutexes for thread safety (safe for single-threaded read-only)
-    // These flags ensure we NEVER take write locks or block the Bear app
-    let connection = Connection::open_with_flags(
-      &self.db_path,
-      OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX
-    )?;
-
-    // Set busy timeout to 5000ms to handle database contention
-    connection.busy_timeout(Duration::from_millis(5000))?;
-
-    // Enable query_only mode as an additional safety measure
-    // This prevents any writes even if somehow attempted
-    connection.pragma_update(None, "query_only", "ON")?;
+    // Open connection using DatabasePath's connection handler
+    let connection = self.db_path.open_connection()?;
 
     // Create Queryable wrapper with normalizing CTE
     let queryable = Queryable::new(&connection, &self.normalizing_cte);
@@ -270,25 +450,27 @@ WITH
   /// Retrieves all tags from Bear
   pub fn tags(&self) -> Result<BearTags, BearError> {
     self.with_connection(|queryable| {
-      let mut statement = queryable.prepare(r"
+      let mut statement = queryable.prepare(
+        r"
       SELECT
         id,
         name,
         modified
       FROM tags
-      ORDER BY name ASC")?;
+      ORDER BY name ASC",
+      )?;
 
-      let results: rusqlite::Result<Vec<BearTag>> = statement.query_map([], |row| {
-        Ok(BearTag {
-          id: row.get("id")?,
-          name: row.get("name")?,
-          modified: row.get("modified")?,
-        })
-      })?.collect();
-
-      let tags = results?.into_iter()
-        .map(|tag| (tag.id, tag))
+      let results: rusqlite::Result<Vec<BearTag>> = statement
+        .query_map([], |row| {
+          Ok(BearTag {
+            id: row.get("id")?,
+            name: row.get("name")?,
+            modified: row.get("modified")?,
+          })
+        })?
         .collect();
+
+      let tags = results?.into_iter().map(|tag| (tag.id, tag)).collect();
 
       Ok(BearTags { tags })
     })
@@ -313,7 +495,10 @@ WITH
   /// # Ok(())
   /// # }
   /// ```
-  pub fn notes(&self, query: NotesQuery) -> Result<Vec<BearNote>, BearError> {
+  pub fn notes(
+    &self,
+    query: NotesQuery,
+  ) -> Result<Vec<BearNote>, BearError> {
     self.with_connection(|queryable| {
       // Build WHERE clause based on query options
       let mut where_clauses = Vec::new();
@@ -330,9 +515,13 @@ WITH
         format!("WHERE {}", where_clauses.join(" AND "))
       };
 
-      let limit_clause = query.limit.map(|l| format!("LIMIT {}", l)).unwrap_or_default();
+      let limit_clause = query
+        .limit
+        .map(|l| format!("LIMIT {}", l))
+        .unwrap_or_default();
 
-      let query = format!(r"
+      let query = format!(
+        r"
       SELECT
         id,
         unique_id,
@@ -344,22 +533,27 @@ WITH
       FROM notes
       {}
       ORDER BY modified DESC
-      {}", where_clause, limit_clause);
+      {}",
+        where_clause, limit_clause
+      );
 
       let mut statement = queryable.prepare(&query)?;
 
-      let results: rusqlite::Result<Vec<BearNote>> = statement
-        .query_map([], note_from_row)?
-        .collect();
+      let results: rusqlite::Result<Vec<BearNote>> =
+        statement.query_map([], note_from_row)?.collect();
 
       Ok(results?)
     })
   }
 
   /// Retrieves all notes linked from the specified note
-  pub fn note_links(&self, from: BearNoteId) -> Result<Vec<BearNote>, BearError> {
+  pub fn note_links(
+    &self,
+    from: BearNoteId,
+  ) -> Result<Vec<BearNote>, BearError> {
     self.with_connection(|queryable| {
-      let mut statement = queryable.prepare(r"
+      let mut statement = queryable.prepare(
+        r"
       SELECT
         n.id,
         n.unique_id,
@@ -371,32 +565,75 @@ WITH
       FROM notes as n
       INNER JOIN note_links as nl ON nl.to_note_id = n.id
       WHERE n.is_trashed <> 1 AND n.is_archived <> 1 AND nl.from_note_id = ?
-      ORDER BY n.modified DESC")?;
+      ORDER BY n.modified DESC",
+      )?;
 
-      let results: rusqlite::Result<Vec<BearNote>> = statement
-        .query_map([from], note_from_row)?
-        .collect();
+      let results: rusqlite::Result<Vec<BearNote>> =
+        statement.query_map([from], note_from_row)?.collect();
 
       Ok(results?)
     })
   }
 
   /// Retrieves all tag IDs associated with the specified note
-  pub fn note_tags(&self, from: BearNoteId) -> Result<HashSet<BearTagId>, BearError> {
+  pub fn note_tags(
+    &self,
+    from: BearNoteId,
+  ) -> Result<HashSet<BearTagId>, BearError> {
     self.with_connection(|queryable| {
-      let mut statement = queryable.prepare(r"
+      let mut statement = queryable.prepare(
+        r"
       SELECT
         tag_id
       FROM note_tags
-      WHERE note_id = ?")?;
+      WHERE note_id = ?",
+      )?;
 
-      let results: rusqlite::Result<HashSet<BearTagId>> = statement.query_map([from], |row| {
-        row.get("tag_id")
-      })?
+      let results: rusqlite::Result<HashSet<BearTagId>> = statement
+        .query_map([from], |row| row.get("tag_id"))?
         .collect();
 
       Ok(results?)
     })
+  }
+
+  /// Execute a generic SQL SELECT query and return results as a Polars DataFrame.
+  ///
+  /// The query automatically has the normalizing CTEs prepended, so you can query
+  /// against clean table names: `notes`, `tags`, `note_tags`, `note_links`.
+  ///
+  /// # Safety
+  /// This method trusts the read-only connection flags to prevent writes. Only SELECT
+  /// queries should be used, though this is not enforced by the library.
+  ///
+  /// # Examples
+  /// ```no_run
+  /// # use bear_query::BearDb;
+  /// # fn main() -> Result<(), bear_query::BearError> {
+  /// let db = BearDb::new()?;
+  ///
+  /// // Query normalized tables
+  /// let df = db.query("SELECT title, modified FROM notes LIMIT 5")?;
+  ///
+  /// // Join tables
+  /// let df = db.query(r"
+  ///   SELECT n.title, t.name as tag_name
+  ///   FROM notes n
+  ///   JOIN note_tags nt ON n.id = nt.note_id
+  ///   JOIN tags t ON nt.tag_id = t.id
+  ///   WHERE n.is_trashed = 0
+  ///   LIMIT 10
+  /// ")?;
+  ///
+  /// println!("{}", df);
+  /// # Ok(())
+  /// # }
+  /// ```
+  pub fn query(
+    &self,
+    sql: &str,
+  ) -> Result<DataFrame, BearError> {
+    self.with_connection(|queryable| query_to_dataframe(queryable, sql))
   }
 }
 
@@ -409,21 +646,37 @@ pub struct Queryable<'a> {
 
 impl<'a> Queryable<'a> {
   /// Creates a new Queryable from a connection and pre-generated CTE string
-  fn new(conn: &'a Connection, normalizing_cte: &'a str) -> Self {
+  fn new(
+    conn: &'a Connection,
+    normalizing_cte: &'a str,
+  ) -> Self {
     Self {
       conn,
       normalizing_cte,
     }
   }
 
+  /// Test-only constructor for creating Queryable in tests
+  ///
+  /// This is pub(crate) so tests in other modules can create Queryables
+  #[cfg(test)]
+  pub(crate) fn new_for_test(
+    conn: &'a Connection,
+    normalizing_cte: &'a str,
+  ) -> Self {
+    Self::new(conn, normalizing_cte)
+  }
+
   /// Prepares a statement with the normalizing CTE automatically prepended.
   /// The user's SQL should query against normalized table names (notes, tags, note_tags, note_links).
-  pub fn prepare(&self, user_sql: &str) -> rusqlite::Result<rusqlite::Statement<'a>> {
+  pub fn prepare(
+    &self,
+    user_sql: &str,
+  ) -> rusqlite::Result<rusqlite::Statement<'a>> {
     let full_sql = format!("{}\n{}", self.normalizing_cte, user_sql);
     self.conn.prepare(&full_sql)
   }
 }
-
 
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub struct DbId(i64);
@@ -491,18 +744,31 @@ pub struct BearTags {
 }
 
 impl BearTags {
-  pub fn get(&self, tag_id: &BearTagId) -> Option<&BearTag> {
+  pub fn get(
+    &self,
+    tag_id: &BearTagId,
+  ) -> Option<&BearTag> {
     self.tags.get(tag_id)
   }
 
-  pub fn names(&self, tag_ids: &HashSet<BearTagId>) -> HashSet<String> {
-    tag_ids.into_iter().filter_map(|id| {
-      self.get(id).map(|t| t.name.clone())
-    }).collect()
+  pub fn count(&self) -> usize {
+    self.tags.len()
+  }
+
+  pub fn iter(&self) -> impl Iterator<Item = &BearTag> {
+    self.tags.values()
+  }
+
+  pub fn names(
+    &self,
+    tag_ids: &HashSet<BearTagId>,
+  ) -> HashSet<String> {
+    tag_ids
+      .into_iter()
+      .filter_map(|id| self.get(id).map(|t| t.name.clone()))
+      .collect()
   }
 }
-
-
 
 #[derive(Debug)]
 pub struct BearNote {
@@ -557,5 +823,60 @@ fn note_from_row(row: &Row) -> rusqlite::Result<BearNote> {
   })
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
 
+  /// Integration test demonstrating BearDb with in-memory database
+  #[test]
+  fn test_beardb_with_inmemory() {
+    // Create a BearDb with an in-memory database (automatically sets up schema)
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
 
+    // Test the typed API
+    let tags = db.tags().unwrap();
+    assert_eq!(tags.count(), 2); // Should have 2 tags from test data
+
+    let notes = db.notes(NotesQuery::default()).unwrap();
+    assert_eq!(notes.len(), 2); // default() excludes trashed, so 2 notes
+
+    // Test filtering - include all notes
+    let all_notes = db
+      .notes(NotesQuery::new().include_all().no_limit())
+      .unwrap();
+    assert_eq!(all_notes.len(), 3); // 3 notes total including trashed
+
+    // Test the generic SQL query API
+    let df = db
+      .query("SELECT id, title FROM notes WHERE is_trashed = 0")
+      .unwrap();
+    assert_eq!(df.height(), 2); // 2 non-trashed notes
+    assert_eq!(df.width(), 2); // 2 columns (id, title)
+
+    // Test aggregation
+    let df = db.query("SELECT COUNT(*) as count FROM notes").unwrap();
+    assert_eq!(df.height(), 1);
+    assert_eq!(df.width(), 1);
+
+    // Verify the count column is an integer (not string)
+    let series = df.column("count").unwrap();
+    let value = series.get(0).unwrap();
+    match value {
+      AnyValue::Int64(n) => assert_eq!(n, 3),
+      _ => panic!("Expected Int64, got: {:?}", value),
+    }
+
+    // Test join query
+    let df = db
+      .query(
+        r"
+      SELECT n.title, t.name as tag_name
+      FROM notes n
+      JOIN note_tags nt ON n.id = nt.note_id
+      JOIN tags t ON nt.tag_id = t.id
+    ",
+      )
+      .unwrap();
+    assert_eq!(df.height(), 2); // 2 note-tag relationships
+  }
+}
