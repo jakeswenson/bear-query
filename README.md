@@ -46,7 +46,7 @@ bear-query = { path = "." }  # or git/version once published
 ### Basic Example
 
 ```rust
-use bear_query::{BearDb, BearError};
+use bear_query::{BearDb, BearError, NotesQuery};
 
 fn main() -> Result<(), BearError> {
     // Create a BearDb handle (doesn't open a connection yet)
@@ -54,10 +54,10 @@ fn main() -> Result<(), BearError> {
 
     // Each method call opens a connection, runs the query, and closes it
     let all_tags = db.tags()?;
-    println!("Tags: {:?}", all_tags);
+    println!("Found {} tags", all_tags.count());
 
-    // Retrieve recent notes (limited to 10)
-    let recent_notes = db.notes()?;
+    // Retrieve recent notes (default: limited to 10, exclude trashed/archived)
+    let recent_notes = db.notes(NotesQuery::default())?;
 
     for note in recent_notes {
         println!("Title: {}", note.title());
@@ -74,6 +74,14 @@ fn main() -> Result<(), BearError> {
         println!("  Tags: {:?}", tag_names);
     }
 
+    // Get all notes including trashed and archived
+    let all_notes = db.notes(NotesQuery::new().no_limit().include_all())?;
+    println!("Total notes: {}", all_notes.len());
+
+    // Use the generic query API to get custom data as a DataFrame
+    let df = db.query("SELECT title, created FROM notes LIMIT 5")?;
+    println!("{}", df);
+
     Ok(())
 }
 ```
@@ -86,6 +94,10 @@ fn main() -> Result<(), BearError> {
 - **`BearNote`**: Represents a note with title, content, metadata
 - **`BearTag`**: Represents a tag
 - **`BearTags`**: Collection of tags with lookup methods
+- **`NotesQuery`**: Builder for configuring note queries (filtering, limits)
+- **`BearNoteId`**: Type-safe note identifier
+- **`BearTagId`**: Type-safe tag identifier
+- **`DataFrame`**: Polars DataFrame (from `polars::prelude::DataFrame`) returned by `query()` method
 
 #### Methods
 
@@ -95,14 +107,37 @@ fn main() -> Result<(), BearError> {
 - **`BearDb::tags(&self) -> Result<BearTags, BearError>`**
   Retrieves all tags from Bear (opens and closes a connection)
 
-- **`BearDb::notes(&self) -> Result<Vec<BearNote>, BearError>`**
-  Retrieves up to 10 most recently modified notes (non-trashed, non-archived)
+- **`BearDb::notes(&self, query: NotesQuery) -> Result<Vec<BearNote>, BearError>`**
+  Retrieves notes from Bear, ordered by most recently modified. Use `NotesQuery` to configure filtering and limits.
 
 - **`BearDb::note_links(&self, from: BearNoteId) -> Result<Vec<BearNote>, BearError>`**
   Retrieves all notes linked from the specified note
 
 - **`BearDb::note_tags(&self, from: BearNoteId) -> Result<HashSet<BearTagId>, BearError>`**
   Retrieves all tag IDs associated with the specified note
+
+- **`BearDb::query(&self, sql: &str) -> Result<DataFrame, BearError>`**
+  Execute a generic SQL SELECT query and return results as a Polars DataFrame. Normalized tables (`notes`, `tags`, `note_tags`, `note_links`) are automatically available.
+
+#### NotesQuery Builder Methods
+
+- **`NotesQuery::new()` / `NotesQuery::default()`**
+  Creates a new query with defaults (limit: 10, exclude trashed and archived)
+
+- **`.limit(n: u32) -> NotesQuery`**
+  Set a limit on the number of notes to return
+
+- **`.no_limit() -> NotesQuery`**
+  Remove the limit and return all matching notes
+
+- **`.include_trashed() -> NotesQuery`**
+  Include trashed notes in results
+
+- **`.include_archived() -> NotesQuery`**
+  Include archived notes in results
+
+- **`.include_all() -> NotesQuery`**
+  Include both trashed and archived notes in results
 
 ## Database Location
 
@@ -121,20 +156,55 @@ Bear uses Core Data with SQLite persistence. Key tables:
 
 - **`ZSFNOTE`**: Contains notes (title, content, timestamps, flags)
 - **`ZSFNOTETAG`**: Contains tags
-- **`Z_7TAGS`**: Junction table linking notes to tags
-- **`Z_7LINKEDNOTES`**: Junction table for note-to-note links
+- **`Z_5TAGS`**: Junction table linking notes to tags (column names may vary by Bear version)
+- **`ZSFNOTEBACKLINK`**: Junction table for note-to-note links
 
 ### Core Data Timestamps
 
 Bear uses Apple's Core Data timestamp format (seconds since 2001-01-01). This library automatically converts them to standard Unix timestamps.
 
-### Query Limits
+### Query Configuration
 
-The `notes()` method limits results to 10 notes to prevent excessive memory usage. To retrieve all notes, modify the SQL query in the `BearDb::notes()` method in `src/lib.rs`:
+The `notes()` method uses `NotesQuery` to configure results. Examples:
 
 ```rust
-// Remove or increase the LIMIT
-LIMIT 10  // Change to your desired limit or remove
+// Default: 10 most recent notes, exclude trashed/archived
+let notes = db.notes(NotesQuery::default())?;
+
+// Get 20 notes
+let notes = db.notes(NotesQuery::new().limit(20))?;
+
+// Get all notes
+let notes = db.notes(NotesQuery::new().no_limit())?;
+
+// Get all notes including trashed and archived
+let notes = db.notes(NotesQuery::new().no_limit().include_all())?;
+```
+
+### Using the Generic Query API
+
+For custom queries beyond the typed API, use the `query()` method which returns Polars DataFrames:
+
+```rust
+// Simple select
+let df = db.query("SELECT title, created FROM notes LIMIT 5")?;
+
+// Join notes with tags
+let df = db.query(r"
+    SELECT n.title, t.name as tag_name
+    FROM notes n
+    JOIN note_tags nt ON n.id = nt.note_id
+    JOIN tags t ON nt.tag_id = t.id
+    WHERE n.is_trashed = 0
+    ORDER BY n.modified DESC
+    LIMIT 10
+")?;
+
+// Aggregation
+let df = db.query("SELECT COUNT(*) as count FROM notes WHERE is_pinned = 1")?;
+
+// The normalized tables available: notes, tags, note_tags, note_links
+println!("{}", df);  // Polars DataFrame with nice formatting
 ```
 
 ## Safety Notes
@@ -161,8 +231,9 @@ The library uses `BearError` for all errors:
 
 ```rust
 pub enum BearError {
-    NoHomeDirectory,  // Cannot locate home directory
-    SqlError { .. },  // SQLite operation failed
+    NoHomeDirectory,       // Cannot locate home directory
+    SqlError { .. },       // SQLite operation failed
+    PolarsError { .. },    // Polars DataFrame operation failed
 }
 ```
 
