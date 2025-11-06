@@ -21,7 +21,7 @@ The architecture is built around a single private method:
   - Executes closure with connection reference
   - Automatically closes connection when closure returns
 
-All public methods (`tags()`, `notes()`, `note_links()`, `note_tags()`) internally call `with_connection()` and should never hold connections longer than necessary.
+All public methods (`tags()`, `note()`, `notes()`, `note_links()`, `note_tags()`) internally call `with_connection()` and should never hold connections longer than necessary.
 
 ### Database Schema & Normalization
 

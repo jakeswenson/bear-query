@@ -585,7 +585,7 @@ impl BearDb {
   ///
   /// // Look up a note by its UUID
   /// let note_id = NoteId::new("ABC123-DEF456-...".to_string());
-  /// if let Some(note) = db.get_note_by_id(&note_id)? {
+  /// if let Some(note) = db.note(&note_id)? {
   ///     println!("Found note: {}", note.title());
   /// } else {
   ///     println!("Note not found");
@@ -593,7 +593,7 @@ impl BearDb {
   /// # Ok(())
   /// # }
   /// ```
-  pub fn get_note_by_id(
+  pub fn note(
     &self,
     id: &NoteId,
   ) -> Result<Option<Note>, BearError> {
@@ -1193,7 +1193,7 @@ mod tests {
     }
   }
 
-  /// Test get_note_by_id with existing note
+  /// Test note() with existing note
   #[test]
   fn test_get_note_by_id_existing() {
     let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
@@ -1204,7 +1204,7 @@ mod tests {
     let note_id = expected_note.id();
 
     // Look it up by ID
-    let found_note = db.get_note_by_id(note_id).unwrap();
+    let found_note = db.note(note_id).unwrap();
 
     assert!(found_note.is_some());
     let found_note = found_note.unwrap();
@@ -1215,19 +1215,19 @@ mod tests {
     assert_eq!(found_note.content(), expected_note.content());
   }
 
-  /// Test get_note_by_id with non-existent note
+  /// Test note() with non-existent note
   #[test]
   fn test_get_note_by_id_not_found() {
     let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
 
     // Try to get a note with an ID that doesn't exist
     let note_id = NoteId::new("nonexistent-uuid".to_string());
-    let result = db.get_note_by_id(&note_id).unwrap();
+    let result = db.note(&note_id).unwrap();
 
     assert!(result.is_none());
   }
 
-  /// Test get_note_by_id with note that has NULL content
+  /// Test note() with note that has NULL content
   #[test]
   fn test_get_note_by_id_with_null_content() {
     let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
@@ -1240,7 +1240,7 @@ mod tests {
     let note_id = null_content_note.id();
 
     // Look it up by ID
-    let found_note = db.get_note_by_id(note_id).unwrap();
+    let found_note = db.note(note_id).unwrap();
 
     assert!(found_note.is_some());
     let found_note = found_note.unwrap();
@@ -1248,6 +1248,33 @@ mod tests {
     // Verify it has a title but no content
     assert_eq!(found_note.title(), "Empty Note");
     assert!(found_note.content().is_none());
+  }
+
+  /// Test note() method
+  #[test]
+  fn test_note_method() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Get a note using the notes() API
+    let notes = db.notes(NotesQuery::new().limit(1)).unwrap();
+    let expected_note = &notes[0];
+    let note_id = expected_note.id();
+
+    // Look it up using the short form note() method
+    let found_note = db.note(note_id).unwrap();
+
+    assert!(found_note.is_some());
+    let found_note = found_note.unwrap();
+
+    // Verify it's the same note
+    assert_eq!(found_note.id(), expected_note.id());
+    assert_eq!(found_note.title(), expected_note.title());
+    assert_eq!(found_note.content(), expected_note.content());
+
+    // Test with non-existent ID
+    let nonexistent_id = NoteId::new("nonexistent-uuid".to_string());
+    let result = db.note(&nonexistent_id).unwrap();
+    assert!(result.is_none());
   }
 
   /// Test basic search in both title and content

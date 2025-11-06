@@ -11,11 +11,11 @@ Use this checklist when making changes to the normalized schema (column names, t
 ## 2. Query Code (`src/lib.rs`)
 - [ ] Update all `SELECT` statements in typed methods:
   - [ ] `tags()`
+  - [ ] `note()`
   - [ ] `notes()`
   - [ ] `search()`
   - [ ] `note_links()`
   - [ ] `note_tags()`
-  - [ ] `get_note_by_id()`
 - [ ] Update all `WHERE` clauses that reference changed columns
 - [ ] Update all `JOIN` conditions that reference changed columns
 - [ ] Verify generic `query()` method examples in doc comments

@@ -122,6 +122,9 @@ fn main() -> Result<(), BearError> {
 - **`BearDb::tags(&self) -> Result<TagsMap, BearError>`**
   Retrieves all tags from Bear (opens and closes a connection)
 
+- **`BearDb::note(&self, id: &NoteId) -> Result<Option<Note>, BearError>`**
+  Retrieves a specific note by its ID. Returns `None` if no note with the given ID exists.
+
 - **`BearDb::notes(&self, query: NotesQuery) -> Result<Vec<Note>, BearError>`**
   Retrieves notes from Bear, ordered by most recently modified. Use `NotesQuery` to configure filtering and limits.
 
