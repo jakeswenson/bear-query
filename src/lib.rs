@@ -110,6 +110,7 @@
 //! ```
 
 mod dataframe;
+mod schema;
 
 pub use polars::prelude as polars_prelude;
 
@@ -162,68 +163,10 @@ impl DatabasePath {
       #[cfg(test)]
       DatabasePath::InMemory => {
         let conn = Connection::open_in_memory()?;
-        Self::setup_test_schema(&conn)?;
+        schema::setup_test_schema(&conn)?;
         Ok(conn)
       }
     }
-  }
-
-  /// Sets up a Bear-like schema with sample test data in an in-memory database
-  #[cfg(test)]
-  fn setup_test_schema(conn: &Connection) -> Result<(), BearError> {
-    conn.execute_batch(r"
-      CREATE TABLE ZSFNOTE (
-        Z_PK INTEGER PRIMARY KEY,
-        ZUNIQUEIDENTIFIER TEXT,
-        ZTITLE TEXT,
-        ZTEXT TEXT,
-        ZMODIFICATIONDATE REAL,
-        ZCREATIONDATE REAL,
-        ZPINNED INTEGER,
-        ZTRASHED INTEGER,
-        ZARCHIVED INTEGER
-      );
-
-      CREATE TABLE ZSFNOTETAG (
-        Z_PK INTEGER PRIMARY KEY,
-        ZTITLE TEXT,
-        ZMODIFICATIONDATE REAL
-      );
-
-      CREATE TABLE Z_5TAGS (
-        Z_5NOTES INTEGER,
-        Z_13TAGS INTEGER
-      );
-
-      CREATE TABLE ZSFNOTEBACKLINK (
-        ZLINKEDBY INTEGER,
-        ZLINKINGTO INTEGER
-      );
-
-      -- Insert sample test data
-      -- Core Data epoch: 2001-01-01, so timestamp 0 = 2001-01-01
-      INSERT INTO ZSFNOTE (Z_PK, ZUNIQUEIDENTIFIER, ZTITLE, ZTEXT, ZMODIFICATIONDATE, ZCREATIONDATE, ZPINNED, ZTRASHED, ZARCHIVED)
-      VALUES
-        (1, 'note-uuid-1', 'First Note', 'Content of first note', 0, 0, 0, 0, 0),
-        (2, 'note-uuid-2', 'Second Note', 'Content of second note', 31536000, 31536000, 1, 0, 0),
-        (3, 'note-uuid-3', 'Trashed Note', 'This is trashed', 0, 0, 0, 1, 0);
-
-      INSERT INTO ZSFNOTETAG (Z_PK, ZTITLE, ZMODIFICATIONDATE)
-      VALUES
-        (1, 'work', 0),
-        (2, 'personal', 0);
-
-      INSERT INTO Z_5TAGS (Z_5NOTES, Z_13TAGS)
-      VALUES
-        (1, 1),
-        (2, 2);
-
-      INSERT INTO ZSFNOTEBACKLINK (ZLINKEDBY, ZLINKINGTO)
-      VALUES
-        (1, 2);
-    ").map_err(|e| BearError::SqlError { source: e })?;
-
-    Ok(())
   }
 }
 
@@ -241,16 +184,6 @@ pub enum BearError {
     #[from]
     source: PolarsError,
   },
-}
-
-/// Metadata discovered from Bear's database schema at initialization time.
-/// This captures the variable parts of Bear's Core Data schema that may change across versions.
-#[derive(Debug, Clone)]
-struct BearDbMetadata {
-  /// Column name in junction table that references notes (e.g., "Z_5NOTES")
-  junction_notes_column: String,
-  /// Column name in junction table that references tags (e.g., "Z_13TAGS")
-  junction_tags_column: String,
 }
 
 /// Query options for filtering notes
@@ -315,7 +248,7 @@ impl NotesQuery {
 /// Handle to Bear's database. All operations use short-lived connections internally.
 pub struct BearDb {
   db_path: DatabasePath,
-  _metadata: BearDbMetadata,
+  _metadata: schema::BearDbMetadata,
   normalizing_cte: String,
 }
 
@@ -339,10 +272,10 @@ impl BearDb {
     let connection = db_path.open_connection()?;
 
     // Discover schema metadata
-    let metadata = Self::discover_metadata(&connection)?;
+    let metadata = schema::discover_metadata(&connection)?;
 
     // Generate normalizing CTE based on discovered metadata
-    let normalizing_cte = Self::generate_normalizing_cte(&metadata);
+    let normalizing_cte = schema::generate_normalizing_cte(&metadata);
 
     // Connection is dropped here, closing it
     drop(connection);
@@ -352,79 +285,6 @@ impl BearDb {
       _metadata: metadata,
       normalizing_cte,
     })
-  }
-
-  /// Discovers variable schema information from Bear's database
-  fn discover_metadata(conn: &Connection) -> Result<BearDbMetadata, BearError> {
-    // Query the junction table to find its column names
-    let mut stmt = conn.prepare("PRAGMA table_info(Z_5TAGS)")?;
-    let columns: Vec<String> = stmt
-      .query_map([], |row| row.get::<_, String>("name"))?
-      .collect::<Result<Vec<_>, _>>()?;
-
-    // Find the columns that reference notes and tags
-    // They follow the pattern Z_<number>NOTES and Z_<number>TAGS
-    let junction_notes_column = columns
-      .iter()
-      .find(|name| name.ends_with("NOTES"))
-      .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?
-      .clone();
-
-    let junction_tags_column = columns
-      .iter()
-      .find(|name| name.ends_with("TAGS"))
-      .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?
-      .clone();
-
-    Ok(BearDbMetadata {
-      junction_notes_column,
-      junction_tags_column,
-    })
-  }
-
-  /// Generates the normalizing CTE SQL that abstracts Bear's Core Data schema
-  fn generate_normalizing_cte(metadata: &BearDbMetadata) -> String {
-    format!(
-      r#"
-WITH
-  core_data AS (
-    SELECT unixepoch('2001-01-01') as epoch
-  ),
-  notes AS (
-    SELECT
-      n.Z_PK as id,
-      n.ZUNIQUEIDENTIFIER as unique_id,
-      n.ZTITLE as title,
-      n.ZTEXT as content,
-      datetime(n.ZMODIFICATIONDATE + cd.epoch, 'unixepoch') as modified,
-      datetime(n.ZCREATIONDATE + cd.epoch, 'unixepoch') as created,
-      n.ZPINNED as is_pinned,
-      n.ZTRASHED as is_trashed,
-      n.ZARCHIVED as is_archived
-    FROM ZSFNOTE as n, core_data as cd
-  ),
-  tags AS (
-    SELECT
-      t.Z_PK as id,
-      t.ZTITLE as name,
-      datetime(t.ZMODIFICATIONDATE + cd.epoch, 'unixepoch') as modified
-    FROM ZSFNOTETAG as t, core_data as cd
-  ),
-  note_tags AS (
-    SELECT
-      nt.{} as note_id,
-      nt.{} as tag_id
-    FROM Z_5TAGS as nt
-  ),
-  note_links AS (
-    SELECT
-      nl.ZLINKEDBY as from_note_id,
-      nl.ZLINKINGTO as to_note_id
-    FROM ZSFNOTEBACKLINK as nl
-  )
-"#,
-      metadata.junction_notes_column, metadata.junction_tags_column
-    )
   }
 
   /// Opens a short-lived connection, wraps it in a Queryable with normalizing CTEs,
