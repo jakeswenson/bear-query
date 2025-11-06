@@ -442,8 +442,8 @@ impl Note {
 /// Helper to construct Note from a database row
 pub(crate) fn note_from_row(row: &Row) -> rusqlite::Result<Note> {
   Ok(Note {
-    _core_db_id: row.get("id")?,
-    id: NoteId::new(row.get("unique_id")?),
+    _core_db_id: row.get("core_db_id")?,
+    id: NoteId::new(row.get("id")?),
     title: row.get("title")?,
     content: row.get("content")?,
     created: row.get("created")?,

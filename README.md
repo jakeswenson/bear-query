@@ -46,7 +46,7 @@ bear-query = { path = "." }  # or git/version once published
 ### Basic Example
 
 ```rust
-use bear_query::{BearDb, BearError, NotesQuery};
+use bear_query::{BearDb, BearError, NotesQuery, SearchQuery, SortOn};
 
 fn main() -> Result<(), BearError> {
     // Create a BearDb handle (doesn't open a connection yet)
@@ -78,6 +78,18 @@ fn main() -> Result<(), BearError> {
     let all_notes = db.notes(NotesQuery::new().no_limit().include_all())?;
     println!("Total notes: {}", all_notes.len());
 
+    // Search notes by title and/or content
+    let search_results = db.search(SearchQuery::new("rust"))?;
+    println!("Found {} notes matching 'rust'", search_results.len());
+
+    // Advanced search with filters
+    let project_notes = db.search(
+        SearchQuery::new("project")
+            .title_only()
+            .sort_by(SortOn::Title.asc())
+            .limit(20)
+    )?;
+
     // Use the generic query API to get custom data as a DataFrame
     let df = db.query("SELECT title, created FROM notes LIMIT 5")?;
     println!("{}", df);
@@ -95,6 +107,9 @@ fn main() -> Result<(), BearError> {
 - **`Tag`**: Represents a tag
 - **`TagsMap`**: Collection of tags with lookup methods
 - **`NotesQuery`**: Builder for configuring note queries (filtering, limits)
+- **`SearchQuery`**: Builder for configuring note searches (search scope, sorting, filtering)
+- **`SortOn`**: What field to sort by (Modified, Created, Title) with `.asc()` and `.desc()` methods
+- **`SortOrder`**: Sort direction (Asc/Desc) wrapping a SortOn field
 - **`NoteId`**: Type-safe note identifier (Bear's UUID)
 - **`TagId`**: Type-safe tag identifier
 - **`DataFrame`**: Polars DataFrame (from `polars::prelude::DataFrame`) returned by `query()` method
@@ -109,6 +124,9 @@ fn main() -> Result<(), BearError> {
 
 - **`BearDb::notes(&self, query: NotesQuery) -> Result<Vec<Note>, BearError>`**
   Retrieves notes from Bear, ordered by most recently modified. Use `NotesQuery` to configure filtering and limits.
+
+- **`BearDb::search(&self, query: SearchQuery) -> Result<Vec<Note>, BearError>`**
+  Searches notes by title and/or content. Use `SearchQuery` to configure search scope, sorting, and filtering.
 
 - **`BearDb::note_links(&self, from: &NoteId) -> Result<Vec<Note>, BearError>`**
   Retrieves all notes linked from the specified note
@@ -138,6 +156,86 @@ fn main() -> Result<(), BearError> {
 
 - **`.include_all() -> NotesQuery`**
   Include both trashed and archived notes in results
+
+#### SearchQuery Builder Methods
+
+- **`SearchQuery::new(query: impl Into<String>) -> SearchQuery`**
+  Creates a new search with the given query string. Defaults: searches both title and content, case-insensitive, limit 50, sorted by most recently modified, excludes trashed and archived.
+
+- **`.title_only() -> SearchQuery`**
+  Search only in note titles (excludes content)
+
+- **`.content_only() -> SearchQuery`**
+  Search only in note content (excludes titles)
+
+- **`.title_and_content() -> SearchQuery`**
+  Search in both title and content (default)
+
+- **`.case_sensitive() -> SearchQuery`**
+  Enable case-sensitive search (default is case-insensitive)
+
+- **`.limit(n: u32) -> SearchQuery`**
+  Set the maximum number of results to return
+
+- **`.no_limit() -> SearchQuery`**
+  Remove the limit and return all matching notes
+
+- **`.sort_by(order: SortOrder) -> SearchQuery`**
+  Set the sort order for results
+
+- **`.include_trashed() -> SearchQuery`**
+  Include trashed notes in search results
+
+- **`.include_archived() -> SearchQuery`**
+  Include archived notes in search results
+
+- **`.include_all() -> SearchQuery`**
+  Include both trashed and archived notes in search results
+
+#### SortOn Fields and Methods
+
+Use `SortOn` to specify what field to sort by, then call `.asc()` or `.desc()`:
+
+- **`SortOn::Modified`** - Sort by modification timestamp
+  - `.desc()` - Most recently modified first (default)
+  - `.asc()` - Least recently modified first
+- **`SortOn::Created`** - Sort by creation timestamp
+  - `.desc()` - Most recently created first
+  - `.asc()` - Least recently created first
+- **`SortOn::Title`** - Sort by note title
+  - `.asc()` - Alphabetical (A-Z)
+  - `.desc()` - Reverse alphabetical (Z-A)
+
+## Searching Notes
+
+The search API provides flexible full-text search across note titles and content:
+
+```rust
+use bear_query::{BearDb, SearchQuery, SortOn};
+
+let db = BearDb::new()?;
+
+// Simple search in both title and content
+let results = db.search(SearchQuery::new("rust"))?;
+
+// Search only in titles
+let results = db.search(SearchQuery::new("project").title_only())?;
+
+// Search only in content
+let results = db.search(SearchQuery::new("TODO").content_only())?;
+
+// Case-sensitive search
+let results = db.search(SearchQuery::new("Rust").case_sensitive())?;
+
+// Complex search with multiple options
+let results = db.search(
+    SearchQuery::new("programming")
+        .title_only()
+        .sort_by(SortOn::Title.asc())
+        .limit(20)
+        .include_archived()
+)?;
+```
 
 ## Database Location
 

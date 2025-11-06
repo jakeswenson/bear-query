@@ -22,8 +22,8 @@ The primary table containing all notes in Bear.
 
 | Column | Type | SQLite Type | Description |
 |--------|------|-------------|-------------|
-| `id` | Integer | `INTEGER` | Note's primary key (maps to `Z_PK`) |
-| `unique_id` | String | `TEXT` | Bear's UUID identifier for the note |
+| `id` | String | `TEXT` | Bear's UUID identifier for the note (primary identifier) |
+| `core_db_id` | Integer | `INTEGER` | Internal Core Data primary key (maps to `Z_PK`, for joins) |
 | `title` | String | `TEXT` | Note title |
 | `content` | String | `TEXT` | Full note content in Markdown format |
 | `modified` | DateTime | `TEXT` | Last modification timestamp (ISO 8601 format) |
@@ -86,8 +86,8 @@ Junction table representing the many-to-many relationship between notes and tags
 
 | Column | Type | SQLite Type | Description |
 |--------|------|-------------|-------------|
-| `note_id` | Integer | `INTEGER` | Foreign key to `notes.id` |
-| `tag_id` | Integer | `INTEGER` | Foreign key to `tags.id` |
+| `note_id` | String | `TEXT` | Note UUID (references `notes.id`) |
+| `tag_id` | Integer | `INTEGER` | Tag ID (references `tags.id`) |
 
 **Source Table:** `Z_5TAGS` (numbers may vary across Bear versions)
 
@@ -121,8 +121,8 @@ Represents wiki-style links between notes.
 
 | Column | Type | SQLite Type | Description |
 |--------|------|-------------|-------------|
-| `from_note_id` | Integer | `INTEGER` | Source note ID (the note containing the link) |
-| `to_note_id` | Integer | `INTEGER` | Target note ID (the linked note) |
+| `from_note_id` | String | `TEXT` | Source note UUID (references `notes.id`) |
+| `to_note_id` | String | `TEXT` | Target note UUID (references `notes.id`) |
 
 **Source Table:** `ZSFNOTEBACKLINK`
 
@@ -203,8 +203,8 @@ WITH
   ),
   notes AS (
     SELECT
-      n.Z_PK as id,
-      n.ZUNIQUEIDENTIFIER as unique_id,
+      n.ZUNIQUEIDENTIFIER as id,
+      n.Z_PK as core_db_id,
       n.ZTITLE as title,
       n.ZTEXT as content,
       datetime(n.ZMODIFICATIONDATE + cd.epoch, 'unixepoch') as modified,
@@ -223,14 +223,14 @@ WITH
   ),
   note_tags AS (
     SELECT
-      nt.Z_5NOTES as note_id,
+      (SELECT n.ZUNIQUEIDENTIFIER FROM ZSFNOTE n WHERE n.Z_PK = nt.Z_5NOTES) as note_id,
       nt.Z_13TAGS as tag_id
     FROM Z_5TAGS as nt
   ),
   note_links AS (
     SELECT
-      nl.ZLINKEDBY as from_note_id,
-      nl.ZLINKINGTO as to_note_id
+      (SELECT n.ZUNIQUEIDENTIFIER FROM ZSFNOTE n WHERE n.Z_PK = nl.ZLINKEDBY) as from_note_id,
+      (SELECT n.ZUNIQUEIDENTIFIER FROM ZSFNOTE n WHERE n.Z_PK = nl.ZLINKINGTO) as to_note_id
     FROM ZSFNOTEBACKLINK as nl
   )
 -- Your query goes here

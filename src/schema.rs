@@ -147,8 +147,8 @@ WITH
   ),
   notes AS (
     SELECT
-      n.Z_PK as id,
-      n.ZUNIQUEIDENTIFIER as unique_id,
+      n.ZUNIQUEIDENTIFIER as id,
+      n.Z_PK as core_db_id,
       n.ZTITLE as title,
       n.ZTEXT as content,
       datetime(n.ZMODIFICATIONDATE + cd.epoch, 'unixepoch') as modified,
@@ -167,14 +167,14 @@ WITH
   ),
   note_tags AS (
     SELECT
-      nt.{} as note_id,
+      (SELECT n.ZUNIQUEIDENTIFIER FROM ZSFNOTE n WHERE n.Z_PK = nt.{}) as note_id,
       nt.{} as tag_id
     FROM {} as nt
   ),
   note_links AS (
     SELECT
-      nl.ZLINKEDBY as from_note_id,
-      nl.ZLINKINGTO as to_note_id
+      (SELECT n.ZUNIQUEIDENTIFIER FROM ZSFNOTE n WHERE n.Z_PK = nl.ZLINKEDBY) as from_note_id,
+      (SELECT n.ZUNIQUEIDENTIFIER FROM ZSFNOTE n WHERE n.Z_PK = nl.ZLINKINGTO) as to_note_id
     FROM ZSFNOTEBACKLINK as nl
   )
 "#,
@@ -242,9 +242,11 @@ mod tests {
 
     let cte = generate_normalizing_cte(&metadata);
 
-    // Verify the CTE contains the correct table and column names
+    // Verify the CTE contains the correct table and column references
     assert!(cte.contains("FROM Z_5TAGS as nt"));
-    assert!(cte.contains("nt.Z_5NOTES as note_id"));
-    assert!(cte.contains("nt.Z_13TAGS as tag_id"));
+    assert!(cte.contains("nt.Z_5NOTES")); // Referenced in subquery
+    assert!(cte.contains("nt.Z_13TAGS")); // Referenced in subquery
+    assert!(cte.contains("ZUNIQUEIDENTIFIER as id")); // Notes use UUID as id
+    assert!(cte.contains("Z_PK as core_db_id")); // Internal ID renamed to core_db_id
   }
 }

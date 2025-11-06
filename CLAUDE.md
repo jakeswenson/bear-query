@@ -113,3 +113,12 @@ cargo install cargo-nextest
 2. All database operations must go through `with_connection()`
 3. The 5000ms busy timeout should not be changed without careful consideration
 4. Never remove the read-only flags or query_only pragma
+
+## Checklists
+
+When making significant changes, use these checklists to ensure everything stays in sync:
+
+- **`SCHEMA_CHANGES.md`** - Comprehensive checklist for schema/column changes
+- **`DOCUMENTATION.md`** - Quick reference for keeping documentation updated
+
+Always review the appropriate checklist before submitting changes.

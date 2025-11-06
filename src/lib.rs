@@ -36,8 +36,8 @@
 //!
 //! | Column | Type | Description |
 //! |--------|------|-------------|
-//! | `id` | INTEGER | Note's primary key |
-//! | `unique_id` | TEXT | Bear's UUID for the note |
+//! | `id` | TEXT | Bear's UUID for the note (primary identifier) |
+//! | `core_db_id` | INTEGER | Internal Core Data primary key (for joins) |
 //! | `title` | TEXT | Note title |
 //! | `content` | TEXT | Full note content (Markdown) |
 //! | `modified` | DATETIME | Last modification timestamp (converted from Core Data epoch) |
@@ -62,8 +62,8 @@
 //!
 //! | Column | Type | Description |
 //! |--------|------|-------------|
-//! | `note_id` | INTEGER | Foreign key to notes.id |
-//! | `tag_id` | INTEGER | Foreign key to tags.id |
+//! | `note_id` | TEXT | Note UUID (references notes.id) |
+//! | `tag_id` | INTEGER | Tag ID (references tags.id) |
 //!
 //! ### `note_links` Table
 //!
@@ -71,8 +71,8 @@
 //!
 //! | Column | Type | Description |
 //! |--------|------|-------------|
-//! | `from_note_id` | INTEGER | Source note ID |
-//! | `to_note_id` | INTEGER | Target note ID |
+//! | `from_note_id` | TEXT | Source note UUID (references notes.id) |
+//! | `to_note_id` | TEXT | Target note UUID (references notes.id) |
 //!
 //! ### Core Data Epoch Conversion
 //!
@@ -92,7 +92,7 @@
 //! ## Example
 //!
 //! ```no_run
-//! use bear_query::{BearDb, NotesQuery};
+//! use bear_query::{BearDb, NotesQuery, SearchQuery, SortOn};
 //!
 //! # fn main() -> Result<(), bear_query::BearError> {
 //! // Create a handle (no connection opened yet)
@@ -110,6 +110,17 @@
 //!         println!("{}", title);
 //!     }
 //! }
+//!
+//! // Search notes by title and/or content
+//! let search_results = db.search(SearchQuery::new("rust"))?;
+//!
+//! // Advanced search with filters
+//! let filtered_results = db.search(
+//!     SearchQuery::new("project")
+//!         .title_only()
+//!         .sort_by(SortOn::Title.asc())
+//!         .limit(20)
+//! )?;
 //! # Ok(())
 //! # }
 //! ```
@@ -277,6 +288,207 @@ impl NotesQuery {
   }
 }
 
+/// What field to sort by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortOn {
+  /// Sort by modification timestamp
+  Modified,
+  /// Sort by creation timestamp
+  Created,
+  /// Sort by note title
+  Title,
+}
+
+impl SortOn {
+  /// Sort in ascending order (oldest/A-Z first)
+  pub fn asc(self) -> SortOrder {
+    SortOrder::Asc(self)
+  }
+
+  /// Sort in descending order (newest/Z-A first)
+  pub fn desc(self) -> SortOrder {
+    SortOrder::Desc(self)
+  }
+}
+
+/// Sort order for search results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortOrder {
+  /// Ascending order (oldest/A-Z first)
+  Asc(SortOn),
+  /// Descending order (newest/Z-A first)
+  Desc(SortOn),
+}
+
+impl Default for SortOrder {
+  fn default() -> Self {
+    SortOrder::Desc(SortOn::Modified)
+  }
+}
+
+impl SortOrder {
+  fn to_sql(&self) -> &'static str {
+    match self {
+      SortOrder::Desc(SortOn::Modified) => "modified DESC",
+      SortOrder::Asc(SortOn::Modified) => "modified ASC",
+      SortOrder::Desc(SortOn::Created) => "created DESC",
+      SortOrder::Asc(SortOn::Created) => "created ASC",
+      SortOrder::Asc(SortOn::Title) => "title ASC",
+      SortOrder::Desc(SortOn::Title) => "title DESC",
+    }
+  }
+}
+
+/// Query builder for searching notes.
+///
+/// Use this builder to configure note search with flexible filtering, sorting, and limits.
+/// By default, searches both title and content, returns up to 50 results sorted by most
+/// recently modified, and excludes trashed and archived notes.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use bear_query::{BearDb, SearchQuery, SortOn};
+/// # fn main() -> Result<(), bear_query::BearError> {
+/// let db = BearDb::new()?;
+///
+/// // Search in both title and content (default)
+/// let notes = db.search(SearchQuery::new("rust"))?;
+///
+/// // Search only in titles
+/// let notes = db.search(
+///     SearchQuery::new("rust")
+///         .title_only()
+/// )?;
+///
+/// // Search only in content
+/// let notes = db.search(
+///     SearchQuery::new("rust")
+///         .content_only()
+/// )?;
+///
+/// // Complex search with custom options
+/// let notes = db.search(
+///     SearchQuery::new("programming")
+///         .title_only()
+///         .limit(20)
+///         .sort_by(SortOn::Title.asc())
+///         .include_archived()
+/// )?;
+///
+/// // Case-sensitive search
+/// let notes = db.search(
+///     SearchQuery::new("Rust")
+///         .case_sensitive()
+/// )?;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+pub struct SearchQuery {
+  query: String,
+  search_title: bool,
+  search_content: bool,
+  case_sensitive: bool,
+  limit: Option<u32>,
+  sort_by: SortOrder,
+  include_trashed: bool,
+  include_archived: bool,
+}
+
+impl SearchQuery {
+  /// Create a new search with the given query string.
+  ///
+  /// By default:
+  /// - Searches both title and content
+  /// - Case-insensitive search
+  /// - Limit: 50 results
+  /// - Sort: Most recently modified first
+  /// - Excludes trashed and archived notes
+  pub fn new(query: impl Into<String>) -> Self {
+    Self {
+      query: query.into(),
+      search_title: true,
+      search_content: true,
+      case_sensitive: false,
+      limit: Some(50),
+      sort_by: SortOrder::default(),
+      include_trashed: false,
+      include_archived: false,
+    }
+  }
+
+  /// Search only in note titles (excludes content)
+  pub fn title_only(mut self) -> Self {
+    self.search_title = true;
+    self.search_content = false;
+    self
+  }
+
+  /// Search only in note content (excludes titles)
+  pub fn content_only(mut self) -> Self {
+    self.search_title = false;
+    self.search_content = true;
+    self
+  }
+
+  /// Search in both title and content (default)
+  pub fn title_and_content(mut self) -> Self {
+    self.search_title = true;
+    self.search_content = true;
+    self
+  }
+
+  /// Enable case-sensitive search (default is case-insensitive)
+  pub fn case_sensitive(mut self) -> Self {
+    self.case_sensitive = true;
+    self
+  }
+
+  /// Set the maximum number of results to return
+  pub fn limit(
+    mut self,
+    limit: u32,
+  ) -> Self {
+    self.limit = Some(limit);
+    self
+  }
+
+  /// Remove the limit and return all matching notes
+  pub fn no_limit(mut self) -> Self {
+    self.limit = None;
+    self
+  }
+
+  /// Set the sort order for results
+  pub fn sort_by(
+    mut self,
+    sort: SortOrder,
+  ) -> Self {
+    self.sort_by = sort;
+    self
+  }
+
+  /// Include trashed notes in results
+  pub fn include_trashed(mut self) -> Self {
+    self.include_trashed = true;
+    self
+  }
+
+  /// Include archived notes in results
+  pub fn include_archived(mut self) -> Self {
+    self.include_archived = true;
+    self
+  }
+
+  /// Include both trashed and archived notes in results
+  pub fn include_all(mut self) -> Self {
+    self.include_trashed = true;
+    self.include_archived = true;
+    self
+  }
+}
+
 /// Handle to Bear's database. All operations use short-lived connections internally.
 pub struct BearDb {
   db_path: DatabasePath,
@@ -390,14 +602,14 @@ impl BearDb {
         r"
       SELECT
         id,
-        unique_id,
+        core_db_id,
         title,
         content,
         modified,
         created,
         is_pinned
       FROM notes
-      WHERE unique_id = ?",
+      WHERE id = ?",
       )?;
 
       let result = statement.query_row([id.as_str()], note_from_row);
@@ -458,7 +670,7 @@ impl BearDb {
         r"
       SELECT
         id,
-        unique_id,
+        core_db_id,
         title,
         content,
         modified,
@@ -479,6 +691,125 @@ impl BearDb {
     })
   }
 
+  /// Searches notes by title and/or content.
+  ///
+  /// Use `SearchQuery` to configure search options including which fields to search,
+  /// sort order, limits, and inclusion of trashed/archived notes.
+  ///
+  /// # Examples
+  /// ```no_run
+  /// # use bear_query::{BearDb, SearchQuery, SortOn};
+  /// # fn main() -> Result<(), bear_query::BearError> {
+  /// let db = BearDb::new()?;
+  ///
+  /// // Simple search in both title and content
+  /// let notes = db.search(SearchQuery::new("rust"))?;
+  ///
+  /// // Search only in titles, sorted alphabetically
+  /// let notes = db.search(
+  ///     SearchQuery::new("project")
+  ///         .title_only()
+  ///         .sort_by(SortOn::Title.asc())
+  /// )?;
+  ///
+  /// // Case-sensitive search in content with custom limit
+  /// let notes = db.search(
+  ///     SearchQuery::new("TODO")
+  ///         .content_only()
+  ///         .case_sensitive()
+  ///         .limit(100)
+  /// )?;
+  /// # Ok(())
+  /// # }
+  /// ```
+  pub fn search(
+    &self,
+    search: SearchQuery,
+  ) -> Result<Vec<Note>, BearError> {
+    self.with_connection(|queryable| {
+      // Build search conditions
+      let mut search_conditions = Vec::new();
+
+      let like_operator = if search.case_sensitive {
+        "GLOB"
+      } else {
+        "LIKE"
+      };
+      let pattern = if search.case_sensitive {
+        format!("*{}*", search.query)
+      } else {
+        format!("%{}%", search.query)
+      };
+
+      if search.search_title {
+        search_conditions.push(format!("title {} ?", like_operator));
+      }
+      if search.search_content {
+        search_conditions.push(format!("content {} ?", like_operator));
+      }
+
+      // If neither title nor content is selected, search nothing (return empty)
+      if search_conditions.is_empty() {
+        return Ok(Vec::new());
+      }
+
+      let search_clause = format!("({})", search_conditions.join(" OR "));
+
+      // Build WHERE clause with filters
+      let mut where_clauses = vec![search_clause];
+
+      if !search.include_trashed {
+        where_clauses.push("is_trashed <> 1".to_string());
+      }
+      if !search.include_archived {
+        where_clauses.push("is_archived <> 1".to_string());
+      }
+
+      let where_clause = format!("WHERE {}", where_clauses.join(" AND "));
+
+      let limit_clause = search
+        .limit
+        .map(|l| format!("LIMIT {}", l))
+        .unwrap_or_default();
+
+      let query_sql = format!(
+        r"
+      SELECT
+        id,
+        core_db_id,
+        title,
+        content,
+        modified,
+        created,
+        is_pinned
+      FROM notes
+      {}
+      ORDER BY {}
+      {}",
+        where_clause,
+        search.sort_by.to_sql(),
+        limit_clause
+      );
+
+      let mut statement = queryable.prepare(&query_sql)?;
+
+      // Bind the pattern for each search condition
+      let results: rusqlite::Result<Vec<Note>> = if search.search_title && search.search_content {
+        // Both title and content: bind pattern twice
+        statement
+          .query_map([pattern.as_str(), pattern.as_str()], note_from_row)?
+          .collect()
+      } else {
+        // Only one field: bind pattern once
+        statement
+          .query_map([pattern.as_str()], note_from_row)?
+          .collect()
+      };
+
+      Ok(results?)
+    })
+  }
+
   /// Retrieves all notes linked from the specified note
   pub fn note_links(
     &self,
@@ -489,7 +820,7 @@ impl BearDb {
         r"
       SELECT
         n.id,
-        n.unique_id,
+        n.core_db_id,
         n.title,
         n.content,
         n.modified,
@@ -497,8 +828,7 @@ impl BearDb {
         n.is_pinned
       FROM notes as n
       INNER JOIN note_links as nl ON nl.to_note_id = n.id
-      INNER JOIN notes as from_note ON from_note.id = nl.from_note_id
-      WHERE n.is_trashed <> 1 AND n.is_archived <> 1 AND from_note.unique_id = ?
+      WHERE n.is_trashed <> 1 AND n.is_archived <> 1 AND nl.from_note_id = ?
       ORDER BY n.modified DESC",
       )?;
 
@@ -521,8 +851,7 @@ impl BearDb {
       SELECT
         nt.tag_id
       FROM note_tags nt
-      INNER JOIN notes n ON n.id = nt.note_id
-      WHERE n.unique_id = ?",
+      WHERE nt.note_id = ?",
       )?;
 
       let results: rusqlite::Result<HashSet<TagId>> = statement
@@ -919,5 +1248,262 @@ mod tests {
     // Verify it has a title but no content
     assert_eq!(found_note.title(), "Empty Note");
     assert!(found_note.content().is_none());
+  }
+
+  /// Test basic search in both title and content
+  #[test]
+  fn test_search_basic() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Search for "first" which appears in title
+    let results = db.search(SearchQuery::new("first")).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].title(), "First Note");
+
+    // Search for "second" which appears in title and content
+    let results = db.search(SearchQuery::new("second")).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].title(), "Second Note");
+
+    // Search for "Content" which appears in multiple notes
+    let results = db.search(SearchQuery::new("Content")).unwrap();
+    assert!(results.len() >= 2);
+  }
+
+  /// Test search with title_only filter
+  #[test]
+  fn test_search_title_only() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Search for "Note" in titles only
+    let results = db.search(SearchQuery::new("Note").title_only()).unwrap();
+
+    // Should find "First Note", "Second Note", and "Empty Note" (not "Trashed Note" as it's excluded by default)
+    assert_eq!(results.len(), 3);
+
+    for note in &results {
+      assert!(note.title().contains("Note"));
+    }
+  }
+
+  /// Test search with content_only filter
+  #[test]
+  fn test_search_content_only() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Search for "Content" in content only
+    let results = db
+      .search(SearchQuery::new("Content").content_only())
+      .unwrap();
+
+    // Should find notes with "Content" in their content field
+    assert!(results.len() >= 2);
+
+    for note in &results {
+      if let Some(content) = note.content() {
+        assert!(content.contains("Content"));
+      }
+    }
+  }
+
+  /// Test search with case sensitivity
+  #[test]
+  fn test_search_case_sensitive() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Case-insensitive search (default) for "FIRST"
+    let results = db.search(SearchQuery::new("FIRST")).unwrap();
+    assert_eq!(results.len(), 1);
+
+    // Case-sensitive search for "FIRST" should find nothing
+    let results = db
+      .search(SearchQuery::new("FIRST").case_sensitive())
+      .unwrap();
+    assert_eq!(results.len(), 0);
+
+    // Case-sensitive search for "First" should find the note
+    let results = db
+      .search(SearchQuery::new("First").case_sensitive())
+      .unwrap();
+    assert_eq!(results.len(), 1);
+  }
+
+  /// Test search with limits
+  #[test]
+  fn test_search_with_limit() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Search for common term with limit
+    let results = db.search(SearchQuery::new("note").limit(2)).unwrap();
+    assert!(results.len() <= 2);
+
+    // Search with no limit
+    let results = db.search(SearchQuery::new("note").no_limit()).unwrap();
+    assert!(results.len() >= 2);
+  }
+
+  /// Test search with sorting
+  #[test]
+  fn test_search_with_sorting() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Search sorted by title ascending
+    let results = db
+      .search(
+        SearchQuery::new("Note")
+          .title_only()
+          .sort_by(SortOn::Title.asc()),
+      )
+      .unwrap();
+
+    assert!(results.len() >= 2);
+
+    // Verify alphabetical order
+    for i in 0..results.len() - 1 {
+      assert!(results[i].title() <= results[i + 1].title());
+    }
+
+    // Search sorted by title descending
+    let results = db
+      .search(
+        SearchQuery::new("Note")
+          .title_only()
+          .sort_by(SortOn::Title.desc()),
+      )
+      .unwrap();
+
+    assert!(results.len() >= 2);
+
+    // Verify reverse alphabetical order
+    for i in 0..results.len() - 1 {
+      assert!(results[i].title() >= results[i + 1].title());
+    }
+  }
+
+  /// Test search excluding trashed notes (default behavior)
+  #[test]
+  fn test_search_excludes_trashed_by_default() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Default search should exclude trashed
+    let results = db.search(SearchQuery::new("Trashed")).unwrap();
+    assert_eq!(results.len(), 0);
+
+    // Including trashed should find it
+    let results = db
+      .search(SearchQuery::new("Trashed").include_trashed())
+      .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].title(), "Trashed Note");
+  }
+
+  /// Test search with include_all
+  #[test]
+  fn test_search_include_all() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Search with all notes included
+    let results = db.search(SearchQuery::new("Note").include_all()).unwrap();
+
+    // Should include trashed notes too
+    let has_trashed = results.iter().any(|n| n.title() == "Trashed Note");
+    assert!(has_trashed);
+  }
+
+  /// Test search with empty results
+  #[test]
+  fn test_search_no_results() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    let results = db.search(SearchQuery::new("nonexistent_term_xyz")).unwrap();
+    assert_eq!(results.len(), 0);
+  }
+
+  /// Test search handles notes with NULL content gracefully
+  #[test]
+  fn test_search_with_null_content() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Search for "Empty Note" in title only to find the note with NULL content
+    let results = db
+      .search(SearchQuery::new("Empty Note").title_only())
+      .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].title(), "Empty Note");
+    assert!(results[0].content().is_none());
+  }
+
+  /// Test search handles notes with empty title gracefully
+  #[test]
+  fn test_search_with_empty_title() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Search for content in a note with empty title
+    let results = db
+      .search(SearchQuery::new("empty title").content_only())
+      .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].title(), "");
+  }
+
+  /// Test complex search query with multiple filters
+  #[test]
+  fn test_search_complex_query() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Complex search: title only, sorted alphabetically, limited, include all
+    let results = db
+      .search(
+        SearchQuery::new("Note")
+          .title_only()
+          .sort_by(SortOn::Title.asc())
+          .limit(2)
+          .include_all(),
+      )
+      .unwrap();
+
+    assert!(results.len() <= 2);
+
+    // Verify results are sorted
+    if results.len() == 2 {
+      assert!(results[0].title() <= results[1].title());
+    }
+  }
+
+  /// Test that SearchQuery builder methods are chainable
+  #[test]
+  fn test_search_query_builder_chaining() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Build a complex query with method chaining
+    let query = SearchQuery::new("note")
+      .title_only()
+      .case_sensitive()
+      .limit(10)
+      .sort_by(SortOn::Modified.desc())
+      .include_archived();
+
+    // Just verify it compiles and runs
+    let _results = db.search(query).unwrap();
+  }
+
+  /// Test search with different SortOrder variants
+  #[test]
+  fn test_search_all_sort_orders() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Test all sort order variants compile and run
+    let orders = vec![
+      SortOn::Modified.desc(),
+      SortOn::Modified.asc(),
+      SortOn::Created.desc(),
+      SortOn::Created.asc(),
+      SortOn::Title.asc(),
+      SortOn::Title.desc(),
+    ];
+
+    for order in orders {
+      let _results = db.search(SearchQuery::new("Note").sort_by(order)).unwrap();
+    }
   }
 }

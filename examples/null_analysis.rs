@@ -1,6 +1,6 @@
 //! Example demonstrating how to use the query interface to analyze NULL values in Bear's database.
 //!
-//! This example shows how many notes have NULL titles, content, and unique_ids.
+//! This example shows how many notes have NULL titles, content, and IDs.
 
 use bear_query::BearDb;
 
@@ -22,11 +22,11 @@ fn main() -> Result<(), bear_query::BearError> {
 
   println!("Notes with NULL content: {}", null_content_count);
 
-  // Query for notes with NULL unique_id
-  let null_uuid_df = db.query("SELECT COUNT(*) as count FROM notes WHERE unique_id IS NULL")?;
-  let null_uuid_count = null_uuid_df.column("count")?.i64()?.get(0).unwrap();
+  // Query for notes with NULL id (UUID)
+  let null_id_df = db.query("SELECT COUNT(*) as count FROM notes WHERE id IS NULL")?;
+  let null_id_count = null_id_df.column("count")?.i64()?.get(0).unwrap();
 
-  println!("Notes with NULL unique_id: {}", null_uuid_count);
+  println!("Notes with NULL id: {}", null_id_count);
 
   // Get total note count for comparison
   let total_df = db.query("SELECT COUNT(*) as count FROM notes")?;
@@ -46,8 +46,8 @@ fn main() -> Result<(), bear_query::BearError> {
       (null_content_count as f64 / total_count as f64) * 100.0
     );
     println!(
-      "NULL unique_id: {:.2}%",
-      (null_uuid_count as f64 / total_count as f64) * 100.0
+      "NULL id: {:.2}%",
+      (null_id_count as f64 / total_count as f64) * 100.0
     );
   }
 
@@ -75,12 +75,12 @@ fn main() -> Result<(), bear_query::BearError> {
             COUNT(*) as count,
             CASE
                 WHEN title IS NULL AND content IS NULL THEN 'Both title and content'
-                WHEN title IS NULL AND unique_id IS NULL THEN 'Both title and unique_id'
-                WHEN content IS NULL AND unique_id IS NULL THEN 'Both content and unique_id'
+                WHEN title IS NULL AND id IS NULL THEN 'Both title and id'
+                WHEN content IS NULL AND id IS NULL THEN 'Both content and id'
                 ELSE 'Other combination'
             END as null_combination
         FROM notes
-        WHERE (title IS NULL OR content IS NULL OR unique_id IS NULL)
+        WHERE (title IS NULL OR content IS NULL OR id IS NULL)
         GROUP BY null_combination
         ",
   )?;
@@ -104,7 +104,7 @@ fn main() -> Result<(), bear_query::BearError> {
             COUNT(*) as total_notes,
             SUM(CASE WHEN title IS NULL THEN 1 ELSE 0 END) as null_titles,
             SUM(CASE WHEN content IS NULL THEN 1 ELSE 0 END) as null_content,
-            SUM(CASE WHEN unique_id IS NULL THEN 1 ELSE 0 END) as null_uuid
+            SUM(CASE WHEN id IS NULL THEN 1 ELSE 0 END) as null_id
         FROM notes
         GROUP BY status
         ORDER BY total_notes DESC
