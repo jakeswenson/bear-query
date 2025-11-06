@@ -624,7 +624,7 @@ impl BearTags {
     tag_ids: &HashSet<BearTagId>,
   ) -> HashSet<String> {
     tag_ids
-      .into_iter()
+      .iter()
       .filter_map(|id| self.get(id).map(|t| t.name.clone()))
       .collect()
   }

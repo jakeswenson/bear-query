@@ -84,16 +84,25 @@ cargo doc --no-deps  # Generate library docs
 ```
 
 ### Testing
-Currently no tests are implemented. When adding tests, use:
+This project uses `cargo-nextest` as the test runner for better performance and output:
 ```bash
-cargo test           # Run all tests
-cargo test test_name # Run specific test
+cargo nextest run              # Run all tests
+cargo nextest run test_name    # Run specific test
+cargo test --doc               # Run doc tests (nextest doesn't support these yet)
+```
+
+If you need to install nextest:
+```bash
+cargo install cargo-nextest
 ```
 
 ## Code Conventions
 
 ### Module System
-- Uses the modern flat module system (NOT mod.rs files)
+- **ALWAYS use the modern flat module system** - declare modules with `mod module_name;` in parent files
+- **NEVER create `mod.rs` files** - this is the old Rust 2015 module system
+- Module files should be named directly (e.g., `src/schema.rs`, `src/dataframe.rs`)
+- Submodules within a directory should use the parent file pattern (e.g., `src/schema.rs` declares submodules, not `src/schema/mod.rs`)
 
 ### No Standard Output in Library Code
 - NEVER use `eprintln!`, `println!`, or similar in lib.rs

@@ -1,12 +1,9 @@
 [package]
 name = "bear-query"
 version = "0.1.0"
-edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+edition = "2024"
 
 [dependencies]
-# Removed unused dependencies: config, dotenvy, uuid
 dirs = "6.0.0"
 rusqlite = { version = "0.37.0", features = ["bundled", "time"] }
 serde = { version = "1.0", features = ["derive"] }

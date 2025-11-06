@@ -69,7 +69,7 @@ pub fn query_to_dataframe(
         // Get the actual value with its type preserved
         let value = row
           .get_ref(i)
-          .map(|v| ColumnValue::from(v))
+          .map(ColumnValue::from)
           .unwrap_or(ColumnValue::Null);
         values.push(value);
       }
@@ -87,7 +87,7 @@ pub fn query_to_dataframe(
   // Build Series from column vectors based on their types
   let series: Vec<_> = column_names
     .into_iter()
-    .zip(columns.into_iter())
+    .zip(columns)
     .map(|(name, data)| {
       // Infer the column type from the data
       build_series(name, data)
