@@ -1,7 +1,13 @@
 [package]
 name = "bear-query"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2024"
+description = "A read-only Rust library for querying the Bear note-taking app's SQLite database with minimal interference"
+readme = "README.md"
+license = "Parity-7.0.0"
+repository = "https://github.com/jakeswenson/bear-query"
+keywords = ["bear", "notes"]
+categories = ["text-processing"]
 
 [dependencies]
 dirs = "6.0.0"
