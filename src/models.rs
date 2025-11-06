@@ -208,6 +208,29 @@ pub(crate) fn tag_from_row(row: &Row) -> rusqlite::Result<Tag> {
 }
 
 /// Collection of tags from Bear's database.
+///
+/// This is a map of tag IDs to tags, returned by `BearDb::tags()`.
+/// It provides convenient methods for looking up tags and converting
+/// tag ID sets into tag names.
+///
+/// # Example
+///
+/// ```no_run
+/// # use bear_query::BearDb;
+/// # fn main() -> Result<(), bear_query::BearError> {
+/// let db = BearDb::new()?;
+/// let tags = db.tags()?;
+///
+/// println!("Total tags: {}", tags.count());
+///
+/// for tag in tags.iter() {
+///     if let Some(name) = tag.name() {
+///         println!("Tag: {}", name);
+///     }
+/// }
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct TagsMap {
   pub(crate) tags: HashMap<TagId, Tag>,
@@ -266,20 +289,17 @@ impl TagsMap {
 ///
 /// # Identifiers
 ///
-/// Bear notes have two types of identifiers:
+/// Bear notes use UUIDs as their primary identifier:
 ///
-/// ## Primary Key (`id()`)
-/// - Type: `CoreDbNoteId` (wraps SQLite's integer primary key)
+/// ## UUID (`id()`)
+/// - Type: `&NoteId` (Bear's UUID like 'ABC123-DEF456-...')
 /// - **Always present** (never NULL)
-/// - Stable across the lifetime of the note
-/// - Use this for all programmatic references, joins, and lookups
-/// - Maps to Bear's internal `Z_PK` column
-///
-/// ## UUID (`unique_id()`)
-/// - Type: `&str` (Bear's UUID like 'ABC123-DEF456-...')
-/// - **Always present** (never NULL)
-/// - Bear uses this internally for syncing and x-callback-url schemes
+/// - Stable across the lifetime of the note and across devices
+/// - Use this for all programmatic references and API calls
+/// - Bear uses this for syncing and x-callback-url schemes
 /// - Used in Bear's x-callback-url API (e.g., `bear://x-callback-url/open-note?id=UUID`)
+///
+/// The internal Core Data primary key is not exposed in the public API.
 ///
 /// # Example
 ///

@@ -91,12 +91,12 @@ fn main() -> Result<(), BearError> {
 #### Core Types
 
 - **`BearDb`**: Connection to Bear's database
-- **`BearNote`**: Represents a note with title, content, metadata
-- **`BearTag`**: Represents a tag
-- **`BearTags`**: Collection of tags with lookup methods
+- **`Note`**: Represents a note with title, content, metadata
+- **`Tag`**: Represents a tag
+- **`TagsMap`**: Collection of tags with lookup methods
 - **`NotesQuery`**: Builder for configuring note queries (filtering, limits)
-- **`BearNoteId`**: Type-safe note identifier
-- **`BearTagId`**: Type-safe tag identifier
+- **`NoteId`**: Type-safe note identifier (Bear's UUID)
+- **`TagId`**: Type-safe tag identifier
 - **`DataFrame`**: Polars DataFrame (from `polars::prelude::DataFrame`) returned by `query()` method
 
 #### Methods
@@ -104,16 +104,16 @@ fn main() -> Result<(), BearError> {
 - **`BearDb::new() -> Result<BearDb, BearError>`**
   Creates a handle to Bear's database (no connection is opened)
 
-- **`BearDb::tags(&self) -> Result<BearTags, BearError>`**
+- **`BearDb::tags(&self) -> Result<TagsMap, BearError>`**
   Retrieves all tags from Bear (opens and closes a connection)
 
-- **`BearDb::notes(&self, query: NotesQuery) -> Result<Vec<BearNote>, BearError>`**
+- **`BearDb::notes(&self, query: NotesQuery) -> Result<Vec<Note>, BearError>`**
   Retrieves notes from Bear, ordered by most recently modified. Use `NotesQuery` to configure filtering and limits.
 
-- **`BearDb::note_links(&self, from: BearNoteId) -> Result<Vec<BearNote>, BearError>`**
+- **`BearDb::note_links(&self, from: &NoteId) -> Result<Vec<Note>, BearError>`**
   Retrieves all notes linked from the specified note
 
-- **`BearDb::note_tags(&self, from: BearNoteId) -> Result<HashSet<BearTagId>, BearError>`**
+- **`BearDb::note_tags(&self, from: &NoteId) -> Result<HashSet<TagId>, BearError>`**
   Retrieves all tag IDs associated with the specified note
 
 - **`BearDb::query(&self, sql: &str) -> Result<DataFrame, BearError>`**

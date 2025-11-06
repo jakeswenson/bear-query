@@ -192,7 +192,33 @@ pub enum BearError {
   },
 }
 
-/// Query options for filtering notes
+/// Query options for filtering notes.
+///
+/// Use this builder to configure how notes are retrieved from Bear.
+/// By default, returns the 10 most recently modified notes, excluding
+/// trashed and archived notes.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use bear_query::{BearDb, NotesQuery};
+/// # fn main() -> Result<(), bear_query::BearError> {
+/// let db = BearDb::new()?;
+///
+/// // Default: 10 most recent notes, exclude trashed/archived
+/// let notes = db.notes(NotesQuery::default())?;
+///
+/// // Get 20 notes
+/// let notes = db.notes(NotesQuery::new().limit(20))?;
+///
+/// // Get all notes including trashed and archived
+/// let notes = db.notes(NotesQuery::new().no_limit().include_all())?;
+///
+/// // Get all non-trashed notes (including archived)
+/// let notes = db.notes(NotesQuery::new().no_limit().include_archived())?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct NotesQuery {
   limit: Option<u32>,
