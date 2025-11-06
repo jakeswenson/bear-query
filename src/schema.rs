@@ -47,12 +47,18 @@ pub fn setup_test_schema(conn: &Connection) -> Result<(), BearError> {
       VALUES
         (1, 'note-uuid-1', 'First Note', 'Content of first note', 0, 0, 0, 0, 0),
         (2, 'note-uuid-2', 'Second Note', 'Content of second note', 31536000, 31536000, 1, 0, 0),
-        (3, 'note-uuid-3', 'Trashed Note', 'This is trashed', 0, 0, 0, 1, 0);
+        (3, 'note-uuid-3', 'Trashed Note', 'This is trashed', 0, 0, 0, 1, 0),
+        -- Note with empty title (but not NULL - Bear doesn't allow NULL titles)
+        (4, 'note-uuid-4', '', 'Content with empty title', 0, 0, 0, 0, 0),
+        -- Note with NULL content (empty note)
+        (5, 'note-uuid-5', 'Empty Note', NULL, 0, 0, 0, 0, 0);
 
       INSERT INTO ZSFNOTETAG (Z_PK, ZTITLE, ZMODIFICATIONDATE)
       VALUES
         (1, 'work', 0),
-        (2, 'personal', 0);
+        (2, 'personal', 0),
+        -- Tag with NULL modified date
+        (3, 'unmodified-tag', NULL);
 
       INSERT INTO Z_5TAGS (Z_5NOTES, Z_13TAGS)
       VALUES

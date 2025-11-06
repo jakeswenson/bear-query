@@ -103,24 +103,30 @@
 //! let recent_notes = db.notes(NotesQuery::default())?;
 //!
 //! for note in recent_notes {
-//!     println!("{}", note.title());
+//!     let title = note.title();
+//!     if title.is_empty() {
+//!         println!("[Untitled]");
+//!     } else {
+//!         println!("{}", title);
+//!     }
 //! }
 //! # Ok(())
 //! # }
 //! ```
 
 mod dataframe;
+mod models;
 mod schema;
 
+pub use models::{BearNote, BearNoteId, BearTag, BearTagId, BearTags};
 pub use polars::prelude as polars_prelude;
 
+use models::{note_from_row, tag_from_row};
 use polars::prelude::*;
-use rusqlite::types::{FromSql, FromSqlResult, ToSqlOutput, ValueRef};
-use rusqlite::{Connection, OpenFlags, Row, ToSql};
-use std::collections::{HashMap, HashSet};
+use rusqlite::{Connection, OpenFlags};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Duration;
-use time::OffsetDateTime;
 
 use dataframe::query_to_dataframe;
 
@@ -320,19 +326,62 @@ impl BearDb {
       ORDER BY name ASC",
       )?;
 
-      let results: rusqlite::Result<Vec<BearTag>> = statement
-        .query_map([], |row| {
-          Ok(BearTag {
-            id: row.get("id")?,
-            name: row.get("name")?,
-            modified: row.get("modified")?,
-          })
-        })?
-        .collect();
+      let results: rusqlite::Result<Vec<BearTag>> =
+        statement.query_map([], tag_from_row)?.collect();
 
-      let tags = results?.into_iter().map(|tag| (tag.id, tag)).collect();
+      let tags = results?.into_iter().map(|tag| (tag.id(), tag)).collect();
 
       Ok(BearTags { tags })
+    })
+  }
+
+  /// Retrieves a specific note by its ID.
+  ///
+  /// Returns `None` if no note with the given ID exists.
+  ///
+  /// # Examples
+  ///
+  /// ```no_run
+  /// # use bear_query::{BearDb, BearNoteId};
+  /// # fn main() -> Result<(), bear_query::BearError> {
+  /// let db = BearDb::new()?;
+  ///
+  /// // Look up a note by ID
+  /// let note_id = BearNoteId::new(42);
+  /// if let Some(note) = db.get_note_by_id(note_id)? {
+  ///     println!("Found note: {:?}", note.title());
+  /// } else {
+  ///     println!("Note not found");
+  /// }
+  /// # Ok(())
+  /// # }
+  /// ```
+  pub fn get_note_by_id(
+    &self,
+    id: BearNoteId,
+  ) -> Result<Option<BearNote>, BearError> {
+    self.with_connection(|queryable| {
+      let mut statement = queryable.prepare(
+        r"
+      SELECT
+        id,
+        unique_id,
+        title,
+        content,
+        modified,
+        created,
+        is_pinned
+      FROM notes
+      WHERE id = ?",
+      )?;
+
+      let result = statement.query_row([id], note_from_row);
+
+      match result {
+        Ok(note) => Ok(Some(note)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(BearError::SqlError { source: e }),
+      }
     })
   }
 
@@ -538,151 +587,6 @@ impl<'a> Queryable<'a> {
   }
 }
 
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct DbId(i64);
-
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct BearNoteId(DbId);
-
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct BearTagId(DbId);
-
-impl FromSql for DbId {
-  fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-    Ok(Self(value.as_i64()?))
-  }
-}
-
-impl FromSql for BearNoteId {
-  fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-    Ok(Self(FromSql::column_result(value)?))
-  }
-}
-
-impl FromSql for BearTagId {
-  fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
-    Ok(Self(FromSql::column_result(value)?))
-  }
-}
-
-impl ToSql for DbId {
-  fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-    self.0.to_sql()
-  }
-}
-
-impl ToSql for BearNoteId {
-  fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-    self.0.to_sql()
-  }
-}
-
-#[derive(Debug, Clone)]
-pub struct BearTag {
-  id: BearTagId,
-  name: String,
-  modified: Option<OffsetDateTime>,
-}
-
-impl BearTag {
-  pub fn id(&self) -> BearTagId {
-    self.id
-  }
-
-  pub fn name(&self) -> &str {
-    &self.name
-  }
-
-  pub fn modified(&self) -> Option<OffsetDateTime> {
-    self.modified
-  }
-}
-
-#[derive(Debug)]
-pub struct BearTags {
-  tags: HashMap<BearTagId, BearTag>,
-}
-
-impl BearTags {
-  pub fn get(
-    &self,
-    tag_id: &BearTagId,
-  ) -> Option<&BearTag> {
-    self.tags.get(tag_id)
-  }
-
-  pub fn count(&self) -> usize {
-    self.tags.len()
-  }
-
-  pub fn iter(&self) -> impl Iterator<Item = &BearTag> {
-    self.tags.values()
-  }
-
-  pub fn names(
-    &self,
-    tag_ids: &HashSet<BearTagId>,
-  ) -> HashSet<String> {
-    tag_ids
-      .iter()
-      .filter_map(|id| self.get(id).map(|t| t.name.clone()))
-      .collect()
-  }
-}
-
-#[derive(Debug)]
-pub struct BearNote {
-  id: BearNoteId,
-  unique_id: String,
-  title: String,
-  content: String,
-  modified: OffsetDateTime,
-  created: OffsetDateTime,
-  is_pinned: bool,
-}
-
-impl BearNote {
-  pub fn id(&self) -> BearNoteId {
-    self.id
-  }
-
-  pub fn unique_id(&self) -> &str {
-    &self.unique_id
-  }
-
-  pub fn title(&self) -> &str {
-    &self.title
-  }
-
-  pub fn content(&self) -> &str {
-    &self.content
-  }
-
-  pub fn modified(&self) -> OffsetDateTime {
-    self.modified
-  }
-
-  pub fn created(&self) -> OffsetDateTime {
-    self.created
-  }
-
-  pub fn is_pinned(&self) -> bool {
-    self.is_pinned
-  }
-}
-
-fn note_from_row(row: &Row) -> rusqlite::Result<BearNote> {
-  Ok(BearNote {
-    id: row.get("id")?,
-    unique_id: row.get("unique_id")?,
-    title: row.get("title")?,
-    content: row.get("content")?,
-    created: row.get("created")?,
-    modified: row.get("modified")?,
-    is_pinned: row.get("is_pinned")?,
-  })
-}
-
 #[cfg(test)]
 mod tests {
   use super::*;
@@ -695,22 +599,22 @@ mod tests {
 
     // Test the typed API
     let tags = db.tags().unwrap();
-    assert_eq!(tags.count(), 2); // Should have 2 tags from test data
+    assert_eq!(tags.count(), 3); // Should have 3 tags from test data (including unmodified-tag)
 
     let notes = db.notes(NotesQuery::default()).unwrap();
-    assert_eq!(notes.len(), 2); // default() excludes trashed, so 2 notes
+    assert_eq!(notes.len(), 4); // default() excludes trashed, so 4 notes (not 5 - one is trashed)
 
     // Test filtering - include all notes
     let all_notes = db
       .notes(NotesQuery::new().include_all().no_limit())
       .unwrap();
-    assert_eq!(all_notes.len(), 3); // 3 notes total including trashed
+    assert_eq!(all_notes.len(), 5); // 5 notes total including trashed
 
     // Test the generic SQL query API
     let df = db
       .query("SELECT id, title FROM notes WHERE is_trashed = 0")
       .unwrap();
-    assert_eq!(df.height(), 2); // 2 non-trashed notes
+    assert_eq!(df.height(), 4); // 4 non-trashed notes
     assert_eq!(df.width(), 2); // 2 columns (id, title)
 
     // Test aggregation
@@ -722,7 +626,7 @@ mod tests {
     let series = df.column("count").unwrap();
     let value = series.get(0).unwrap();
     match value {
-      AnyValue::Int64(n) => assert_eq!(n, 3),
+      AnyValue::Int64(n) => assert_eq!(n, 5),
       _ => panic!("Expected Int64, got: {:?}", value),
     }
 
@@ -738,5 +642,255 @@ mod tests {
       )
       .unwrap();
     assert_eq!(df.height(), 2); // 2 note-tag relationships
+  }
+
+  /// Test handling of notes with empty title (not NULL, but empty string)
+  #[test]
+  fn test_note_with_empty_title() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Get all notes including the one with empty title (id=4)
+    let notes = db
+      .notes(NotesQuery::new().no_limit().include_all())
+      .unwrap();
+
+    // Find the note with empty title
+    let note_with_empty_title = notes
+      .iter()
+      .find(|n| n.title().is_empty())
+      .expect("Should have a note with empty title");
+
+    // Verify the note exists and has empty title
+    assert_eq!(note_with_empty_title.title(), "");
+
+    // Verify other fields are still accessible
+    assert!(note_with_empty_title.content().is_some());
+    assert_eq!(
+      note_with_empty_title.content().unwrap(),
+      "Content with empty title"
+    );
+  }
+
+  /// Test handling of notes with NULL content
+  #[test]
+  fn test_note_with_null_content() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    let notes = db
+      .notes(NotesQuery::new().no_limit().include_all())
+      .unwrap();
+
+    // Find the note with NULL content (id=5)
+    let note_with_null_content = notes
+      .iter()
+      .find(|n| n.content().is_none())
+      .expect("Should have a note with NULL content");
+
+    // Verify the note has a title but no content
+    assert_eq!(note_with_null_content.title(), "Empty Note");
+    assert!(note_with_null_content.content().is_none());
+  }
+
+  /// Test that all notes have unique_id
+  #[test]
+  fn test_all_notes_have_unique_id() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    let notes = db
+      .notes(NotesQuery::new().no_limit().include_all())
+      .unwrap();
+
+    // All notes should have unique_id (never NULL)
+    for note in notes {
+      let uuid = note.unique_id();
+      assert!(!uuid.is_empty(), "unique_id should never be empty");
+    }
+  }
+
+  /// Test handling of tags with NULL modified date
+  #[test]
+  fn test_tag_with_null_modified() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    let tags = db.tags().unwrap();
+
+    // Find tag with NULL modified date (id=3, name="unmodified-tag")
+    let unmodified_tag = tags
+      .iter()
+      .find(|t| t.modified().is_none())
+      .expect("Should have a tag with NULL modified date");
+
+    // Verify the tag has a name but no modified date
+    assert_eq!(unmodified_tag.name(), Some("unmodified-tag"));
+    assert!(unmodified_tag.modified().is_none());
+  }
+
+  /// Test that tag count includes tags with NULL modified dates
+  #[test]
+  fn test_tags_count_includes_null_modified() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    let tags = db.tags().unwrap();
+
+    // Should have 3 tags total (work, personal, unmodified-tag)
+    assert_eq!(tags.count(), 3);
+  }
+
+  /// Test querying for notes with empty title using generic query API
+  #[test]
+  fn test_query_with_empty_title() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Query for notes with empty title using generic query API
+    let df = db
+      .query("SELECT id, title, content FROM notes WHERE title = ''")
+      .unwrap();
+
+    assert_eq!(df.height(), 1); // Should find 1 note with empty title
+  }
+
+  /// Test querying for notes with NULL content
+  #[test]
+  fn test_query_with_null_content() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Query for notes with NULL content
+    let df = db
+      .query("SELECT id, title, content FROM notes WHERE content IS NULL")
+      .unwrap();
+
+    assert_eq!(df.height(), 1); // Should find 1 note with NULL content
+  }
+
+  /// Test that BearTags::names handles NULL tag names gracefully
+  #[test]
+  fn test_note_tags_names_handles_null() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    let tags = db.tags().unwrap();
+
+    // Get all tag IDs
+    let all_tag_ids: HashSet<_> = tags.iter().map(|t| t.id()).collect();
+
+    // Get names - should handle tags with NULL names gracefully
+    let names = tags.names(&all_tag_ids);
+
+    // Should have 3 valid names (all our test tags have names)
+    assert_eq!(names.len(), 3);
+    assert!(names.contains("work"));
+    assert!(names.contains("personal"));
+    assert!(names.contains("unmodified-tag"));
+  }
+
+  /// Test that all notes have valid IDs and required fields are always present
+  #[test]
+  fn test_all_notes_have_valid_id() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    let notes = db
+      .notes(NotesQuery::new().no_limit().include_all())
+      .unwrap();
+
+    // Every note should have a valid id (primary key is never NULL)
+    for note in notes {
+      let _id = note.id(); // This should never panic
+
+      // Timestamps should always be present
+      let _created = note.created();
+      let _modified = note.modified();
+
+      // Boolean should always be present
+      let _is_pinned = note.is_pinned();
+    }
+  }
+
+  /// Test that all tags have valid IDs
+  #[test]
+  fn test_all_tags_have_valid_id() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    let tags = db.tags().unwrap();
+
+    // Every tag should have a valid id (primary key is never NULL)
+    for tag in tags.iter() {
+      let _id = tag.id(); // This should never panic
+    }
+  }
+
+  /// Test that note_links handles notes with NULL fields gracefully
+  #[test]
+  fn test_note_links_with_null_safe_notes() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Get the first note's ID
+    let notes = db.notes(NotesQuery::new().limit(1)).unwrap();
+    let first_note = &notes[0];
+
+    // Query note links - should handle notes with NULL fields gracefully
+    let linked_notes = db.note_links(first_note.id()).unwrap();
+
+    // All linked notes should be queryable even if they have NULL fields
+    for linked_note in linked_notes {
+      let _id = linked_note.id();
+      let _title = linked_note.title(); // May be None, but shouldn't error
+      let _content = linked_note.content(); // May be None, but shouldn't error
+    }
+  }
+
+  /// Test get_note_by_id with existing note
+  #[test]
+  fn test_get_note_by_id_existing() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Get a note using the notes() API
+    let notes = db.notes(NotesQuery::new().limit(1)).unwrap();
+    let expected_note = &notes[0];
+    let note_id = expected_note.id();
+
+    // Look it up by ID
+    let found_note = db.get_note_by_id(note_id).unwrap();
+
+    assert!(found_note.is_some());
+    let found_note = found_note.unwrap();
+
+    // Verify it's the same note
+    assert_eq!(found_note.id(), expected_note.id());
+    assert_eq!(found_note.title(), expected_note.title());
+    assert_eq!(found_note.content(), expected_note.content());
+  }
+
+  /// Test get_note_by_id with non-existent note
+  #[test]
+  fn test_get_note_by_id_not_found() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Try to get a note with an ID that doesn't exist
+    let note_id = BearNoteId::new(99999);
+    let result = db.get_note_by_id(note_id).unwrap();
+
+    assert!(result.is_none());
+  }
+
+  /// Test get_note_by_id with note that has NULL content
+  #[test]
+  fn test_get_note_by_id_with_null_content() {
+    let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
+
+    // Find a note with NULL content
+    let notes = db
+      .notes(NotesQuery::new().no_limit().include_all())
+      .unwrap();
+    let null_content_note = notes.iter().find(|n| n.content().is_none()).unwrap();
+    let note_id = null_content_note.id();
+
+    // Look it up by ID
+    let found_note = db.get_note_by_id(note_id).unwrap();
+
+    assert!(found_note.is_some());
+    let found_note = found_note.unwrap();
+
+    // Verify it has a title but no content
+    assert_eq!(found_note.title(), "Empty Note");
+    assert!(found_note.content().is_none());
   }
 }
