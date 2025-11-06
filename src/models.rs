@@ -90,12 +90,12 @@ impl NoteId {
 ///
 /// This wraps the tag's SQLite primary key.
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct BearTagId(pub(crate) CoreDbId);
+pub struct TagId(pub(crate) CoreDbId);
 
-impl BearTagId {
-  /// Creates a new `BearTagId` from an `i64` primary key value.
+impl TagId {
+  /// Creates a new `TagId` from an `i64` primary key value.
   pub fn new(id: i64) -> Self {
-    BearTagId(CoreDbId(id))
+    TagId(CoreDbId(id))
   }
 
   /// Returns the underlying `i64` value of this ID.
@@ -116,7 +116,7 @@ impl FromSql for CoreDbNoteId {
   }
 }
 
-impl FromSql for BearTagId {
+impl FromSql for TagId {
   fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
     Ok(Self(FromSql::column_result(value)?))
   }
@@ -164,17 +164,17 @@ impl ToSql for CoreDbNoteId {
 /// # }
 /// ```
 #[derive(Debug, Clone)]
-pub struct BearTag {
-  id: BearTagId,
+pub struct Tag {
+  id: TagId,
   name: Option<String>,
   modified: Option<OffsetDateTime>,
 }
 
-impl BearTag {
+impl Tag {
   /// Returns the tag's primary key identifier.
   ///
   /// This is always present (never NULL) and stable across the tag's lifetime.
-  pub fn id(&self) -> BearTagId {
+  pub fn id(&self) -> TagId {
     self.id
   }
 
@@ -198,9 +198,9 @@ impl BearTag {
   }
 }
 
-/// Helper to construct BearTag from a database row
-pub(crate) fn tag_from_row(row: &Row) -> rusqlite::Result<BearTag> {
-  Ok(BearTag {
+/// Helper to construct Tag from a database row
+pub(crate) fn tag_from_row(row: &Row) -> rusqlite::Result<Tag> {
+  Ok(Tag {
     id: row.get("id")?,
     name: row.get("name")?,
     modified: row.get("modified")?,
@@ -209,16 +209,16 @@ pub(crate) fn tag_from_row(row: &Row) -> rusqlite::Result<BearTag> {
 
 /// Collection of tags from Bear's database.
 #[derive(Debug)]
-pub struct BearTags {
-  pub(crate) tags: HashMap<BearTagId, BearTag>,
+pub struct TagsMap {
+  pub(crate) tags: HashMap<TagId, Tag>,
 }
 
-impl BearTags {
+impl TagsMap {
   /// Gets a tag by its ID.
   pub fn get(
     &self,
-    tag_id: &BearTagId,
-  ) -> Option<&BearTag> {
+    tag_id: &TagId,
+  ) -> Option<&Tag> {
     self.tags.get(tag_id)
   }
 
@@ -228,7 +228,7 @@ impl BearTags {
   }
 
   /// Returns an iterator over all tags.
-  pub fn iter(&self) -> impl Iterator<Item = &BearTag> {
+  pub fn iter(&self) -> impl Iterator<Item = &Tag> {
     self.tags.values()
   }
 
@@ -237,7 +237,7 @@ impl BearTags {
   /// Tags with NULL names are omitted from the result.
   pub fn names(
     &self,
-    tag_ids: &HashSet<BearTagId>,
+    tag_ids: &HashSet<TagId>,
   ) -> HashSet<String> {
     tag_ids
       .iter()
@@ -302,7 +302,7 @@ impl BearTags {
 /// # }
 /// ```
 #[derive(Debug)]
-pub struct BearNote {
+pub struct Note {
   _core_db_id: CoreDbNoteId,
   id: NoteId,
   title: String,
@@ -312,7 +312,7 @@ pub struct BearNote {
   is_pinned: bool,
 }
 
-impl BearNote {
+impl Note {
   /// Returns the note's internal Core Data ID (for internal use only).
   ///
   /// This is used internally for database queries and joins.
@@ -419,9 +419,9 @@ impl BearNote {
   }
 }
 
-/// Helper to construct BearNote from a database row
-pub(crate) fn note_from_row(row: &Row) -> rusqlite::Result<BearNote> {
-  Ok(BearNote {
+/// Helper to construct Note from a database row
+pub(crate) fn note_from_row(row: &Row) -> rusqlite::Result<Note> {
+  Ok(Note {
     _core_db_id: row.get("id")?,
     id: NoteId::new(row.get("unique_id")?),
     title: row.get("title")?,
@@ -449,15 +449,15 @@ mod tests {
     assert_eq!(note_id2.into_string(), uuid2);
   }
 
-  /// Test BearTagId::new and as_i64
+  /// Test TagId::new and as_i64
   #[test]
   fn test_bear_tag_id_construction() {
-    let tag_id = BearTagId::new(42);
+    let tag_id = TagId::new(42);
     assert_eq!(tag_id.as_i64(), 42);
 
     // Test round-trip
     let id_value = 12345;
-    let tag_id = BearTagId::new(id_value);
+    let tag_id = TagId::new(id_value);
     assert_eq!(tag_id.as_i64(), id_value);
   }
 
@@ -478,12 +478,12 @@ mod tests {
     assert!(!set.contains(&id3));
   }
 
-  /// Test BearTagId equality and hashing
+  /// Test TagId equality and hashing
   #[test]
   fn test_bear_tag_id_equality() {
-    let id1 = BearTagId::new(42);
-    let id2 = BearTagId::new(42);
-    let id3 = BearTagId::new(43);
+    let id1 = TagId::new(42);
+    let id2 = TagId::new(42);
+    let id3 = TagId::new(43);
 
     assert_eq!(id1, id2);
     assert_ne!(id1, id3);

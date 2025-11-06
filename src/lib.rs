@@ -118,7 +118,7 @@ mod dataframe;
 mod models;
 mod schema;
 
-pub use models::{BearNote, BearTag, BearTagId, BearTags, NoteId};
+pub use models::{Note, NoteId, Tag, TagId, TagsMap};
 pub use polars::prelude as polars_prelude;
 
 use models::{note_from_row, tag_from_row};
@@ -135,7 +135,7 @@ use dataframe::query_to_dataframe;
 /// For production code, use RealPath to connect to Bear's database.
 /// For tests, use InMemory to create an isolated test database.
 #[derive(Debug, Clone)]
-pub enum DatabasePath {
+enum DatabasePath {
   /// Path to Bear's actual database file
   RealPath(PathBuf),
   /// In-memory database for testing (only available with cfg(test))
@@ -314,7 +314,7 @@ impl BearDb {
   }
 
   /// Retrieves all tags from Bear
-  pub fn tags(&self) -> Result<BearTags, BearError> {
+  pub fn tags(&self) -> Result<TagsMap, BearError> {
     self.with_connection(|queryable| {
       let mut statement = queryable.prepare(
         r"
@@ -326,12 +326,11 @@ impl BearDb {
       ORDER BY name ASC",
       )?;
 
-      let results: rusqlite::Result<Vec<BearTag>> =
-        statement.query_map([], tag_from_row)?.collect();
+      let results: rusqlite::Result<Vec<Tag>> = statement.query_map([], tag_from_row)?.collect();
 
       let tags = results?.into_iter().map(|tag| (tag.id(), tag)).collect();
 
-      Ok(BearTags { tags })
+      Ok(TagsMap { tags })
     })
   }
 
@@ -359,7 +358,7 @@ impl BearDb {
   pub fn get_note_by_id(
     &self,
     id: &NoteId,
-  ) -> Result<Option<BearNote>, BearError> {
+  ) -> Result<Option<Note>, BearError> {
     self.with_connection(|queryable| {
       let mut statement = queryable.prepare(
         r"
@@ -407,7 +406,7 @@ impl BearDb {
   pub fn notes(
     &self,
     query: NotesQuery,
-  ) -> Result<Vec<BearNote>, BearError> {
+  ) -> Result<Vec<Note>, BearError> {
     self.with_connection(|queryable| {
       // Build WHERE clause based on query options
       let mut where_clauses = Vec::new();
@@ -448,8 +447,7 @@ impl BearDb {
 
       let mut statement = queryable.prepare(&query)?;
 
-      let results: rusqlite::Result<Vec<BearNote>> =
-        statement.query_map([], note_from_row)?.collect();
+      let results: rusqlite::Result<Vec<Note>> = statement.query_map([], note_from_row)?.collect();
 
       Ok(results?)
     })
@@ -459,7 +457,7 @@ impl BearDb {
   pub fn note_links(
     &self,
     from: &NoteId,
-  ) -> Result<Vec<BearNote>, BearError> {
+  ) -> Result<Vec<Note>, BearError> {
     self.with_connection(|queryable| {
       let mut statement = queryable.prepare(
         r"
@@ -478,7 +476,7 @@ impl BearDb {
       ORDER BY n.modified DESC",
       )?;
 
-      let results: rusqlite::Result<Vec<BearNote>> = statement
+      let results: rusqlite::Result<Vec<Note>> = statement
         .query_map([from.as_str()], note_from_row)?
         .collect();
 
@@ -490,7 +488,7 @@ impl BearDb {
   pub fn note_tags(
     &self,
     from: &NoteId,
-  ) -> Result<HashSet<BearTagId>, BearError> {
+  ) -> Result<HashSet<TagId>, BearError> {
     self.with_connection(|queryable| {
       let mut statement = queryable.prepare(
         r"
@@ -501,7 +499,7 @@ impl BearDb {
       WHERE n.unique_id = ?",
       )?;
 
-      let results: rusqlite::Result<HashSet<BearTagId>> = statement
+      let results: rusqlite::Result<HashSet<TagId>> = statement
         .query_map([from.as_str()], |row| row.get("tag_id"))?
         .collect();
 
@@ -765,7 +763,7 @@ mod tests {
     assert_eq!(df.height(), 1); // Should find 1 note with NULL content
   }
 
-  /// Test that BearTags::names handles NULL tag names gracefully
+  /// Test that Tags::names handles NULL tag names gracefully
   #[test]
   fn test_note_tags_names_handles_null() {
     let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
