@@ -118,7 +118,7 @@ mod dataframe;
 mod models;
 mod schema;
 
-pub use models::{BearNote, BearNoteId, BearTag, BearTagId, BearTags};
+pub use models::{BearNote, BearTag, BearTagId, BearTags, NoteId};
 pub use polars::prelude as polars_prelude;
 
 use models::{note_from_row, tag_from_row};
@@ -342,14 +342,14 @@ impl BearDb {
   /// # Examples
   ///
   /// ```no_run
-  /// # use bear_query::{BearDb, BearNoteId};
+  /// # use bear_query::{BearDb, NoteId};
   /// # fn main() -> Result<(), bear_query::BearError> {
   /// let db = BearDb::new()?;
   ///
-  /// // Look up a note by ID
-  /// let note_id = BearNoteId::new(42);
-  /// if let Some(note) = db.get_note_by_id(note_id)? {
-  ///     println!("Found note: {:?}", note.title());
+  /// // Look up a note by its UUID
+  /// let note_id = NoteId::new("ABC123-DEF456-...".to_string());
+  /// if let Some(note) = db.get_note_by_id(&note_id)? {
+  ///     println!("Found note: {}", note.title());
   /// } else {
   ///     println!("Note not found");
   /// }
@@ -358,7 +358,7 @@ impl BearDb {
   /// ```
   pub fn get_note_by_id(
     &self,
-    id: BearNoteId,
+    id: &NoteId,
   ) -> Result<Option<BearNote>, BearError> {
     self.with_connection(|queryable| {
       let mut statement = queryable.prepare(
@@ -372,10 +372,10 @@ impl BearDb {
         created,
         is_pinned
       FROM notes
-      WHERE id = ?",
+      WHERE unique_id = ?",
       )?;
 
-      let result = statement.query_row([id], note_from_row);
+      let result = statement.query_row([id.as_str()], note_from_row);
 
       match result {
         Ok(note) => Ok(Some(note)),
@@ -458,7 +458,7 @@ impl BearDb {
   /// Retrieves all notes linked from the specified note
   pub fn note_links(
     &self,
-    from: BearNoteId,
+    from: &NoteId,
   ) -> Result<Vec<BearNote>, BearError> {
     self.with_connection(|queryable| {
       let mut statement = queryable.prepare(
@@ -473,12 +473,14 @@ impl BearDb {
         n.is_pinned
       FROM notes as n
       INNER JOIN note_links as nl ON nl.to_note_id = n.id
-      WHERE n.is_trashed <> 1 AND n.is_archived <> 1 AND nl.from_note_id = ?
+      INNER JOIN notes as from_note ON from_note.id = nl.from_note_id
+      WHERE n.is_trashed <> 1 AND n.is_archived <> 1 AND from_note.unique_id = ?
       ORDER BY n.modified DESC",
       )?;
 
-      let results: rusqlite::Result<Vec<BearNote>> =
-        statement.query_map([from], note_from_row)?.collect();
+      let results: rusqlite::Result<Vec<BearNote>> = statement
+        .query_map([from.as_str()], note_from_row)?
+        .collect();
 
       Ok(results?)
     })
@@ -487,19 +489,20 @@ impl BearDb {
   /// Retrieves all tag IDs associated with the specified note
   pub fn note_tags(
     &self,
-    from: BearNoteId,
+    from: &NoteId,
   ) -> Result<HashSet<BearTagId>, BearError> {
     self.with_connection(|queryable| {
       let mut statement = queryable.prepare(
         r"
       SELECT
-        tag_id
-      FROM note_tags
-      WHERE note_id = ?",
+        nt.tag_id
+      FROM note_tags nt
+      INNER JOIN notes n ON n.id = nt.note_id
+      WHERE n.unique_id = ?",
       )?;
 
       let results: rusqlite::Result<HashSet<BearTagId>> = statement
-        .query_map([from], |row| row.get("tag_id"))?
+        .query_map([from.as_str()], |row| row.get("tag_id"))?
         .collect();
 
       Ok(results?)
@@ -702,8 +705,8 @@ mod tests {
 
     // All notes should have unique_id (never NULL)
     for note in notes {
-      let uuid = note.unique_id();
-      assert!(!uuid.is_empty(), "unique_id should never be empty");
+      let uuid = note.id();
+      assert!(!uuid.as_str().is_empty(), "unique_id should never be empty");
     }
   }
 
@@ -832,7 +835,7 @@ mod tests {
     // All linked notes should be queryable even if they have NULL fields
     for linked_note in linked_notes {
       let _id = linked_note.id();
-      let _title = linked_note.title(); // May be None, but shouldn't error
+      let _title = linked_note.title();
       let _content = linked_note.content(); // May be None, but shouldn't error
     }
   }
@@ -865,8 +868,8 @@ mod tests {
     let db = BearDb::new_with_path(DatabasePath::InMemory).unwrap();
 
     // Try to get a note with an ID that doesn't exist
-    let note_id = BearNoteId::new(99999);
-    let result = db.get_note_by_id(note_id).unwrap();
+    let note_id = NoteId::new("nonexistent-uuid".to_string());
+    let result = db.get_note_by_id(&note_id).unwrap();
 
     assert!(result.is_none());
   }

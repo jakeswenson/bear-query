@@ -12,60 +12,77 @@ use time::OffsetDateTime;
 ///
 /// This wraps SQLite's INTEGER PRIMARY KEY values.
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct DbId(pub(crate) i64);
+pub(crate) struct CoreDbId(pub(crate) i64);
 
-/// Unique identifier for a Bear note.
+/// Internal Core Data note identifier.
 ///
 /// This wraps the note's SQLite primary key (`Z_PK` in Bear's schema).
+/// This ID is internal to the database and should not be exposed in public APIs.
+/// Use `NoteId` for the public API instead.
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub(crate) struct CoreDbNoteId(pub(crate) CoreDbId);
+
+impl CoreDbNoteId {
+  // Internal construction is done via FromSql trait when reading from database
+}
+
+/// Bear note identifier (UUID-based).
+///
+/// This wraps Bear's UUID identifier for notes. This is the identifier that Bear
+/// uses in its UI, x-callback-url API, and for syncing notes across devices.
 ///
 /// # Creating IDs
 ///
-/// You can create a `BearNoteId` from an `i64` value:
+/// You can create a `NoteId` from a UUID string:
 ///
 /// ```
-/// use bear_query::BearNoteId;
+/// use bear_query::NoteId;
 ///
-/// let note_id = BearNoteId::new(42);
+/// let note_id = NoteId::new("ABC123-DEF456-...".to_string());
 /// ```
 ///
 /// # Usage
 ///
 /// Use this ID for:
-/// - Looking up specific notes with `db.get_note_by_id()`
-/// - Querying related data (tags, links)
-/// - Storing references to notes
+/// - Opening notes in Bear via x-callback-url: `bear://x-callback-url/open-note?id={uuid}`
+/// - Storing stable references to notes that work across devices
+/// - Matching notes in sync operations
 ///
-/// The ID is stable across the note's lifetime and is the recommended
-/// way to reference notes programmatically.
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct BearNoteId(pub(crate) DbId);
+/// This is Bear's primary identifier for notes.
+#[derive(Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub struct NoteId(String);
 
-impl BearNoteId {
-  /// Creates a new `BearNoteId` from an `i64` primary key value.
+impl NoteId {
+  /// Creates a new `NoteId` from a UUID string.
   ///
   /// # Example
   ///
   /// ```
-  /// use bear_query::BearNoteId;
+  /// use bear_query::NoteId;
   ///
-  /// let note_id = BearNoteId::new(42);
+  /// let note_id = NoteId::new("ABC123-DEF456-...".to_string());
   /// ```
-  pub fn new(id: i64) -> Self {
-    BearNoteId(DbId(id))
+  pub fn new(uuid: String) -> Self {
+    NoteId(uuid)
   }
 
-  /// Returns the underlying `i64` value of this ID.
+  /// Returns the UUID as a string slice.
   ///
   /// # Example
   ///
   /// ```
-  /// use bear_query::BearNoteId;
+  /// use bear_query::NoteId;
   ///
-  /// let note_id = BearNoteId::new(42);
-  /// assert_eq!(note_id.as_i64(), 42);
+  /// let note_id = NoteId::new("ABC123-DEF456-...".to_string());
+  /// assert_eq!(note_id.as_str(), "ABC123-DEF456-...");
   /// ```
-  pub fn as_i64(self) -> i64 {
-    self.0.0
+  pub fn as_str(&self) -> &str {
+    &self.0
+  }
+
+  /// Consumes the NoteId and returns the inner UUID string.
+  pub fn into_string(self) -> String {
+    self.0
   }
 }
 
@@ -73,12 +90,12 @@ impl BearNoteId {
 ///
 /// This wraps the tag's SQLite primary key.
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
-pub struct BearTagId(pub(crate) DbId);
+pub struct BearTagId(pub(crate) CoreDbId);
 
 impl BearTagId {
   /// Creates a new `BearTagId` from an `i64` primary key value.
   pub fn new(id: i64) -> Self {
-    BearTagId(DbId(id))
+    BearTagId(CoreDbId(id))
   }
 
   /// Returns the underlying `i64` value of this ID.
@@ -87,13 +104,13 @@ impl BearTagId {
   }
 }
 
-impl FromSql for DbId {
+impl FromSql for CoreDbId {
   fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
     Ok(Self(value.as_i64()?))
   }
 }
 
-impl FromSql for BearNoteId {
+impl FromSql for CoreDbNoteId {
   fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
     Ok(Self(FromSql::column_result(value)?))
   }
@@ -105,13 +122,13 @@ impl FromSql for BearTagId {
   }
 }
 
-impl ToSql for DbId {
+impl ToSql for CoreDbId {
   fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
     self.0.to_sql()
   }
 }
 
-impl ToSql for BearNoteId {
+impl ToSql for CoreDbNoteId {
   fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
     self.0.to_sql()
   }
@@ -252,7 +269,7 @@ impl BearTags {
 /// Bear notes have two types of identifiers:
 ///
 /// ## Primary Key (`id()`)
-/// - Type: `BearNoteId` (wraps SQLite's integer primary key)
+/// - Type: `CoreDbNoteId` (wraps SQLite's integer primary key)
 /// - **Always present** (never NULL)
 /// - Stable across the lifetime of the note
 /// - Use this for all programmatic references, joins, and lookups
@@ -275,21 +292,19 @@ impl BearTags {
 /// for note in notes {
 ///     let note_id = note.id();
 ///     let title = note.title();
-///     let uuid = note.unique_id();
 ///
 ///     // Only content may be None
 ///     let content = note.content().unwrap_or("");
 ///
-///     println!("Note {}: {} ({} bytes)", note_id.as_i64(), title, content.len());
-///     println!("  UUID: {}", uuid);
+///     println!("Note {}: {} ({} bytes)", note_id.as_str(), title, content.len());
 /// }
 /// # Ok(())
 /// # }
 /// ```
 #[derive(Debug)]
 pub struct BearNote {
-  id: BearNoteId,
-  unique_id: String,
+  _core_db_id: CoreDbNoteId,
+  id: NoteId,
   title: String,
   content: Option<String>,
   modified: OffsetDateTime,
@@ -298,28 +313,26 @@ pub struct BearNote {
 }
 
 impl BearNote {
-  /// Returns the note's primary key identifier.
+  /// Returns the note's internal Core Data ID (for internal use only).
   ///
-  /// This is the **recommended identifier** for all programmatic use:
-  /// - Always present (never NULL)
-  /// - Stable across the note's lifetime
-  /// - Efficient for database queries and joins
-  ///
-  /// Use this for:
-  /// - Looking up notes by ID
-  /// - Querying related data (tags, links)
-  /// - Storing references to notes
-  pub fn id(&self) -> BearNoteId {
-    self.id
+  /// This is used internally for database queries and joins.
+  /// External users should use `id()` which returns Bear's UUID.
+  pub(crate) fn _core_db_id(&self) -> CoreDbNoteId {
+    self._core_db_id
   }
 
-  /// Returns the note's Bear UUID identifier.
+  /// Returns the note's Bear identifier.
   ///
-  /// This UUID is used by Bear for:
-  /// - Syncing notes across devices
-  /// - x-callback-url API (e.g., `bear://x-callback-url/open-note?id=UUID`)
+  /// This is Bear's UUID identifier, which is:
+  /// - Always present (never NULL)
+  /// - Stable across the note's lifetime
+  /// - Works across devices (syncing)
+  /// - Used in Bear's x-callback-url API
   ///
-  /// For programmatic queries and joins, prefer using `id()` (the primary key).
+  /// Use this for:
+  /// - Opening notes in Bear
+  /// - Storing references to notes
+  /// - Matching notes across devices
   ///
   /// # Example
   ///
@@ -329,13 +342,13 @@ impl BearNote {
   /// # let db = BearDb::new()?;
   /// # let notes = db.notes(NotesQuery::default())?;
   /// # let note = &notes[0];
-  /// let uuid = note.unique_id();
-  /// println!("Open in Bear: bear://x-callback-url/open-note?id={}", uuid);
+  /// let note_id = note.id();
+  /// println!("Open in Bear: bear://x-callback-url/open-note?id={}", note_id.as_str());
   /// # Ok(())
   /// # }
   /// ```
-  pub fn unique_id(&self) -> &str {
-    &self.unique_id
+  pub fn id(&self) -> &NoteId {
+    &self.id
   }
 
   /// Returns the note's title.
@@ -409,8 +422,8 @@ impl BearNote {
 /// Helper to construct BearNote from a database row
 pub(crate) fn note_from_row(row: &Row) -> rusqlite::Result<BearNote> {
   Ok(BearNote {
-    id: row.get("id")?,
-    unique_id: row.get("unique_id")?,
+    _core_db_id: row.get("id")?,
+    id: NoteId::new(row.get("unique_id")?),
     title: row.get("title")?,
     content: row.get("content")?,
     created: row.get("created")?,
@@ -423,16 +436,17 @@ pub(crate) fn note_from_row(row: &Row) -> rusqlite::Result<BearNote> {
 mod tests {
   use super::*;
 
-  /// Test BearNoteId::new and as_i64
+  /// Test NoteId::new and as_str
   #[test]
-  fn test_bear_note_id_construction() {
-    let note_id = BearNoteId::new(42);
-    assert_eq!(note_id.as_i64(), 42);
+  fn test_note_id_construction() {
+    let uuid = "ABC123-DEF456-GHI789".to_string();
+    let note_id = NoteId::new(uuid.clone());
+    assert_eq!(note_id.as_str(), &uuid);
 
     // Test round-trip
-    let id_value = 12345;
-    let note_id = BearNoteId::new(id_value);
-    assert_eq!(note_id.as_i64(), id_value);
+    let uuid2 = "note-uuid-12345".to_string();
+    let note_id2 = NoteId::new(uuid2.clone());
+    assert_eq!(note_id2.into_string(), uuid2);
   }
 
   /// Test BearTagId::new and as_i64
@@ -447,12 +461,12 @@ mod tests {
     assert_eq!(tag_id.as_i64(), id_value);
   }
 
-  /// Test BearNoteId equality and hashing
+  /// Test NoteId equality and hashing
   #[test]
-  fn test_bear_note_id_equality() {
-    let id1 = BearNoteId::new(42);
-    let id2 = BearNoteId::new(42);
-    let id3 = BearNoteId::new(43);
+  fn test_note_id_equality() {
+    let id1 = NoteId::new("ABC123".to_string());
+    let id2 = NoteId::new("ABC123".to_string());
+    let id3 = NoteId::new("DEF456".to_string());
 
     assert_eq!(id1, id2);
     assert_ne!(id1, id3);
